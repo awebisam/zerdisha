@@ -85,7 +85,7 @@ async def test_gap_check_happy_path(orchestrator):
     orchestrator.embedding_service.calculate_gap_score = MagicMock(return_value={
         "similarity": 0.95, "gap_score": 0.05, "severity": "low", "canonical_definition": "..."
     })
-    orchestrator._format_gap_message = MagicMock(return_value="A friendly message.")
+    orchestrator._format_gap_message = AsyncMock(return_value="A friendly message.")
 
     # Act
     result = await orchestrator._gap_check()
@@ -162,7 +162,7 @@ async def test_gap_check_with_existing_vectors(orchestrator, sample_vectors):
         "severity_description": "Very close alignment"
     }
     orchestrator.embedding_service.calculate_gap_score = MagicMock(return_value=gap_analysis)
-    orchestrator._format_gap_message = MagicMock(return_value="Great understanding! Your metaphors align well...")
+    orchestrator._format_gap_message = AsyncMock(return_value="Great understanding! Your metaphors align well...")
 
     # Act
     result = await orchestrator._gap_check()

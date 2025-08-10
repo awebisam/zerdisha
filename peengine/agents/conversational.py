@@ -232,34 +232,174 @@ Follow these instructions for the next turn:
         return "\n".join(summaries)
     
     async def update_persona(self, adjustments: Optional[Dict[str, Any]]) -> None:
-        """Update persona using intelligent LLM-based synthesis."""
+        """Update persona using intelligent LLM-based synthesis with comprehensive validation."""
         if adjustments is None or not adjustments:
             logger.debug("No persona adjustments provided")
             return
         
-        logger.info(f"Synthesizing persona adjustments: {list(adjustments.keys())}")
+        # Validate adjustments before processing
+        validated_adjustments = self._validate_persona_adjustments(adjustments)
+        if not validated_adjustments:
+            logger.warning("All persona adjustments failed validation, skipping update")
+            return
         
-        # Use LLM to intelligently synthesize adjustments with current persona
-        synthesized_adjustments = await self._synthesize_persona_adjustments(adjustments)
+        logger.info(f"Synthesizing validated persona adjustments: {list(validated_adjustments.keys())}")
         
-        # Track previous state for logging changes
-        previous_adjustments = self.current_persona_adjustments.copy()
+        # Create backup of current state for recovery
+        backup_adjustments = self.current_persona_adjustments.copy()
         
-        # Apply synthesized adjustments
-        self.current_persona_adjustments.update(synthesized_adjustments)
-        
-        # Log specific changes made
-        for key, value in synthesized_adjustments.items():
-            if key in previous_adjustments:
-                if previous_adjustments[key] != value:
-                    logger.info(f"Synthesized persona adjustment '{key}': '{previous_adjustments[key]}' -> '{value}'")
+        try:
+            # Use LLM to intelligently synthesize adjustments with current persona
+            synthesized_adjustments = await self._synthesize_persona_adjustments(validated_adjustments)
+            
+            # Validate synthesized adjustments
+            final_adjustments = self._validate_persona_adjustments(synthesized_adjustments)
+            if not final_adjustments:
+                logger.warning("Synthesized adjustments failed validation, keeping current persona")
+                return
+            
+            # Track previous state for logging changes
+            previous_adjustments = self.current_persona_adjustments.copy()
+            
+            # Apply synthesized adjustments
+            self.current_persona_adjustments.update(final_adjustments)
+            
+            # Validate final persona state
+            if not self._validate_persona_state():
+                logger.error("Final persona state is invalid, restoring backup")
+                self.current_persona_adjustments = backup_adjustments
+                return
+            
+            # Log specific changes made
+            for key, value in final_adjustments.items():
+                if key in previous_adjustments:
+                    if previous_adjustments[key] != value:
+                        logger.info(f"Synthesized persona adjustment '{key}': '{previous_adjustments[key]}' -> '{value}'")
+                    else:
+                        logger.debug(f"Persona adjustment '{key}' unchanged: '{value}'")
                 else:
-                    logger.debug(f"Persona adjustment '{key}' unchanged: '{value}'")
-            else:
-                logger.info(f"Added synthesized persona adjustment '{key}': '{value}'")
+                    logger.info(f"Added synthesized persona adjustment '{key}': '{value}'")
+            
+            logger.info(f"CA now has {len(self.current_persona_adjustments)} active persona adjustments")
+            logger.debug(f"Synthesized persona adjustments: {json.dumps(self.current_persona_adjustments, indent=2)}")
+            
+        except Exception as e:
+            logger.error(f"Error during persona update: {e}")
+            logger.info("Restoring persona backup due to error")
+            self.current_persona_adjustments = backup_adjustments
+    
+    def _validate_persona_adjustments(self, adjustments: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate persona adjustments to prevent corruption."""
+        if not isinstance(adjustments, dict):
+            logger.warning(f"Invalid adjustments type: {type(adjustments)}, expected dict")
+            return {}
         
-        logger.info(f"CA now has {len(self.current_persona_adjustments)} active persona adjustments")
-        logger.debug(f"Synthesized persona adjustments: {json.dumps(self.current_persona_adjustments, indent=2)}")
+        validated = {}
+        valid_keys = {
+            'metaphor_style', 'question_depth', 'topic_focus', 'pace', 'engagement_style',
+            'instructions', 'tone', 'approach', 'guidance', 'behavior', 'style',
+            'metaphor_diversity', 'curiosity_level', 'exploration_depth'
+        }
+        
+        for key, value in adjustments.items():
+            try:
+                # Validate key format
+                if not isinstance(key, str):
+                    logger.warning(f"Invalid adjustment key type: {type(key)}, skipping")
+                    continue
+                
+                if len(key) > 100:
+                    logger.warning(f"Adjustment key too long: {len(key)} chars, skipping")
+                    continue
+                
+                # Validate value
+                if value is None:
+                    logger.debug(f"Skipping None value for key '{key}'")
+                    continue
+                
+                if isinstance(value, str):
+                    if len(value) > 1000:
+                        logger.warning(f"Adjustment value too long for '{key}': {len(value)} chars, truncating")
+                        value = value[:1000] + "..."
+                    
+                    # Check for potentially harmful content
+                    if any(harmful in value.lower() for harmful in ['ignore', 'forget', 'override', 'disable']):
+                        logger.warning(f"Potentially harmful adjustment for '{key}': {value[:50]}..., skipping")
+                        continue
+                
+                elif isinstance(value, list):
+                    if len(value) > 20:
+                        logger.warning(f"Adjustment list too long for '{key}': {len(value)} items, truncating")
+                        value = value[:20]
+                    
+                    # Validate list items
+                    validated_list = []
+                    for item in value:
+                        if isinstance(item, str) and len(item) <= 200:
+                            validated_list.append(item)
+                        else:
+                            logger.debug(f"Skipping invalid list item in '{key}': {type(item)}")
+                    value = validated_list
+                
+                elif isinstance(value, (int, float, bool)):
+                    # Numeric and boolean values are generally safe
+                    pass
+                
+                else:
+                    logger.warning(f"Unsupported adjustment value type for '{key}': {type(value)}, skipping")
+                    continue
+                
+                # Add to validated adjustments
+                validated[key] = value
+                
+            except Exception as e:
+                logger.error(f"Error validating adjustment '{key}': {e}")
+                continue
+        
+        logger.info(f"Validated {len(validated)}/{len(adjustments)} persona adjustments")
+        return validated
+    
+    def _validate_persona_state(self) -> bool:
+        """Validate the overall persona state for consistency."""
+        try:
+            # Check total size
+            total_adjustments = len(self.current_persona_adjustments)
+            if total_adjustments > 50:
+                logger.warning(f"Too many persona adjustments: {total_adjustments}")
+                return False
+            
+            # Check for conflicting adjustments
+            if 'metaphor_style' in self.current_persona_adjustments:
+                metaphor_style = self.current_persona_adjustments['metaphor_style']
+                if isinstance(metaphor_style, str):
+                    if 'avoid metaphors' in metaphor_style.lower() and 'use metaphors' in metaphor_style.lower():
+                        logger.warning("Conflicting metaphor style instructions detected")
+                        return False
+            
+            # Check for contradictory pace instructions
+            if 'pace' in self.current_persona_adjustments:
+                pace = self.current_persona_adjustments['pace']
+                if isinstance(pace, str):
+                    if 'slow down' in pace.lower() and 'speed up' in pace.lower():
+                        logger.warning("Conflicting pace instructions detected")
+                        return False
+            
+            # Validate instructions format
+            if 'instructions' in self.current_persona_adjustments:
+                instructions = self.current_persona_adjustments['instructions']
+                if not isinstance(instructions, list):
+                    logger.warning(f"Instructions should be a list, got {type(instructions)}")
+                    return False
+                
+                if len(instructions) > 10:
+                    logger.warning(f"Too many instructions: {len(instructions)}")
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error validating persona state: {e}")
+            return False
     
     async def _synthesize_persona_adjustments(self, new_adjustments: Dict[str, Any]) -> Dict[str, Any]:
         """Use LLM to intelligently synthesize persona adjustments."""

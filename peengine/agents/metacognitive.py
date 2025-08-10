@@ -239,11 +239,11 @@ Return JSON:
                 return analysis
             else:
                 logger.warning("Could not parse JSON from MA analysis")
-                return {"flags": [], "insights": [], "persona_adjustments": {}}
+                return {"error": "Could not parse JSON from MA analysis", "flags": [], "insights": [], "persona_adjustments": {}}
                 
         except Exception as e:
             logger.error(f"MA analysis failed: {e}")
-            return {"flags": [], "insights": [], "persona_adjustments": {}}
+            return {"error": f"MA analysis failed: {e}", "flags": [], "insights": [], "persona_adjustments": {}}
     
     async def _analyze_metaphor_patterns(self, messages: List[Dict], extractions: List[ConceptExtraction]) -> Dict[str, Any]:
         """Analyze metaphor patterns with LLM intelligence."""

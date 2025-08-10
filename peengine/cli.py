@@ -356,44 +356,122 @@ Don't worry - your exploration progress is saved! Let's keep going.
 
 
 def display_session_map(map_data: dict):
-    """Display session concept map with nodes and contextual relationship descriptions."""
+    """Display session concept map with comprehensive error handling and fallback mechanisms."""
+    
+    # Handle error cases with helpful messages
     if 'error' in map_data:
-        console.print(f"[red]{map_data['error']}[/red]")
+        error_message = map_data.get('message', map_data['error'])
+        console.print(Panel(
+            Markdown(error_message),
+            title="🗺️ Session Map",
+            border_style="yellow"
+        ))
+        
+        # Show recovery suggestions if available
+        if 'recovery_suggestions' in map_data:
+            console.print("\n[dim]💡 Try these steps:[/dim]")
+            for suggestion in map_data['recovery_suggestions']:
+                console.print(f"  • {suggestion}")
         return
     
-    # Display nodes table
-    nodes_table = Table(title=f"Session Map: {map_data.get('topic', 'Unknown')}")
-    nodes_table.add_column("Concept", style="cyan")
-    nodes_table.add_column("Type", style="green") 
-    nodes_table.add_column("Domain", style="yellow")
+    # Handle empty session case
+    if map_data.get('status') == 'empty_session':
+        console.print(Panel(
+            Markdown(map_data.get('message', 'No concepts mapped yet')),
+            title=f"🗺️ Session Map: {map_data.get('topic', 'Unknown')}",
+            border_style="blue"
+        ))
+        return
     
-    for node in map_data.get('nodes', []):
-        concept = node.get('label', 'Unknown')
-        node_type = node.get('node_type', 'unknown')
-        properties = node.get('properties') or {}
-        domain = properties.get('domain', 'general')
-        nodes_table.add_row(concept, node_type, domain)
-    
-    console.print(nodes_table)
-    
-    # Display relationships with contextual descriptions
-    edges = map_data.get('edges', [])
-    relationship_descriptions = map_data.get('relationship_descriptions', [])
-    
-    if edges:
-        console.print("\n[bold]Conceptual Connections:[/bold]")
+    # Display nodes table with error handling
+    try:
+        nodes = map_data.get('nodes', [])
+        topic = map_data.get('topic', 'Unknown')
         
-        # If we have LLM-generated descriptions, use them
-        if relationship_descriptions:
-            for desc in relationship_descriptions:
-                console.print(f"• {desc}")
-        else:
-            # Fallback to simple table format
-            relationships_table = Table()
-            relationships_table.add_column("Connection", style="magenta", width=60)
-            relationships_table.add_column("Type", style="blue")
+        if nodes:
+            nodes_table = Table(title=f"Session Map: {topic}")
+            nodes_table.add_column("Concept", style="cyan")
+            nodes_table.add_column("Type", style="green") 
+            nodes_table.add_column("Domain", style="yellow")
             
-            for edge in edges:
+            for node in nodes:
+                try:
+                    concept = node.get('label', 'Unknown')
+                    node_type = node.get('node_type', 'unknown')
+                    properties = node.get('properties') or {}
+                    domain = properties.get('domain', 'general')
+                    nodes_table.add_row(concept, node_type, domain)
+                except Exception as node_error:
+                    logger.warning(f"Error displaying node: {node_error}")
+                    nodes_table.add_row("Error loading concept", "unknown", "unknown")
+            
+            console.print(nodes_table)
+        else:
+            console.print(f"[dim]📍 Session: {topic}[/dim]")
+            console.print("[yellow]No concepts to display[/yellow]")
+    
+    except Exception as table_error:
+        logger.error(f"Error creating nodes table: {table_error}")
+        console.print("[red]Error displaying concept table[/red]")
+    
+    # Display relationships with comprehensive error handling
+    try:
+        edges = map_data.get('edges', [])
+        relationship_descriptions = map_data.get('relationship_descriptions', [])
+        
+        if edges:
+            console.print("\n[bold]Conceptual Connections:[/bold]")
+            
+            # Try to use LLM-generated descriptions first
+            if relationship_descriptions:
+                try:
+                    for desc in relationship_descriptions:
+                        if desc and isinstance(desc, str):
+                            console.print(desc)
+                        else:
+                            console.print("• Connection description unavailable")
+                except Exception as desc_error:
+                    logger.warning(f"Error displaying relationship descriptions: {desc_error}")
+                    # Fall back to simple format
+                    display_simple_relationships(edges)
+            else:
+                # Fallback to simple table format
+                display_simple_relationships(edges)
+        else:
+            if nodes:  # Only show this if we have nodes but no edges
+                console.print("\n[dim]🔗 No connections mapped yet[/dim]")
+    
+    except Exception as relationships_error:
+        logger.error(f"Error displaying relationships: {relationships_error}")
+        console.print("[red]Error displaying connections[/red]")
+    
+    # Display summary statistics with error handling
+    try:
+        node_count = map_data.get('node_count', len(map_data.get('nodes', [])))
+        connection_count = map_data.get('connection_count', len(map_data.get('edges', [])))
+        
+        console.print(f"\n[dim]📊 Summary: {node_count} concepts, {connection_count} connections[/dim]")
+        
+        # Display warnings if there were data issues
+        if 'warnings' in map_data:
+            console.print(f"\n[yellow]⚠️  Data issues:[/yellow]")
+            for warning in map_data['warnings']:
+                console.print(f"  • {warning}")
+        
+    except Exception as summary_error:
+        logger.error(f"Error displaying summary: {summary_error}")
+        console.print("[dim]Summary unavailable[/dim]")
+
+
+def display_simple_relationships(edges: list):
+    """Display relationships in simple table format as fallback."""
+    try:
+        relationships_table = Table()
+        relationships_table.add_column("Connection", style="magenta", width=60)
+        relationships_table.add_column("Type", style="blue")
+        
+        for edge in edges:
+            try:
                 source_label = edge.get('source_label', 'Unknown')
                 target_label = edge.get('target_label', 'Unknown')
                 edge_type = edge.get('edge_type', 'relates')
@@ -401,23 +479,73 @@ def display_session_map(map_data: dict):
                 # Format relationship in human-readable form (escape brackets for Rich)
                 connection_text = f"\\[{source_label}] --({edge_type})--> \\[{target_label}]"
                 relationships_table.add_row(connection_text, edge_type)
-            
-            console.print(relationships_table)
-    
-    # Summary statistics
-    node_count = map_data.get('node_count', 0)
+                
+            except Exception as edge_error:
+                logger.warning(f"Error displaying edge: {edge_error}")
+                relationships_table.add_row("Connection unavailable", "unknown")
+        
+        console.print(relationships_table)
+        
+    except Exception as table_error:
+        logger.error(f"Error creating relationships table: {table_error}")
+        console.print("[red]Error displaying connection table[/red]")
     connection_count = map_data.get('connection_count', 0)
     
     console.print(f"\n[dim]📊 Summary: {node_count} concepts, {connection_count} connections[/dim]")
 
 
 def display_gap_check(gap_data: dict):
-    """Display understanding gap analysis."""
-    console.print(Panel(
-        Markdown(gap_data.get('message', 'Gap check analysis not available')),
-        title="Understanding Gap Check",
-        border_style="yellow"
-    ))
+    """Display understanding gap analysis with comprehensive error handling."""
+    
+    # Handle error cases
+    if 'error' in gap_data:
+        error_message = gap_data.get('message', gap_data['error'])
+        console.print(Panel(
+            Markdown(error_message),
+            title="🔍 Understanding Gap Check",
+            border_style="yellow"
+        ))
+        
+        # Show recovery suggestions if available
+        if 'recovery_suggestions' in gap_data:
+            console.print("\n[dim]💡 Try these steps:[/dim]")
+            for suggestion in gap_data['recovery_suggestions']:
+                console.print(f"  • {suggestion}")
+        return
+    
+    # Handle successful gap analysis
+    try:
+        message = gap_data.get('message', 'Gap check analysis not available')
+        
+        # Determine border color based on gap severity
+        severity = gap_data.get('severity', 'unknown')
+        if severity in ['minimal', 'low']:
+            border_style = "green"
+        elif severity == 'moderate':
+            border_style = "yellow"
+        else:
+            border_style = "red"
+        
+        console.print(Panel(
+            Markdown(message),
+            title="🔍 Understanding Gap Check",
+            border_style=border_style
+        ))
+        
+        # Display technical details if available (for debugging/advanced users)
+        if gap_data.get('success') and any(key in gap_data for key in ['similarity', 'gap_score', 'concept']):
+            concept = gap_data.get('concept', 'Unknown')
+            similarity = gap_data.get('similarity', 0.0)
+            
+            console.print(f"\n[dim]📊 Analysis: {concept} | Similarity: {similarity:.2f} | Severity: {severity}[/dim]")
+    
+    except Exception as display_error:
+        logger.error(f"Error displaying gap check: {display_error}")
+        console.print(Panel(
+            Markdown("⚠️ **Gap analysis display error**\n\nThere was an issue displaying your gap analysis results."),
+            title="🔍 Understanding Gap Check",
+            border_style="red"
+        ))
 
 
 def display_seed(seed_data: dict):

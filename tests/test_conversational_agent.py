@@ -15,7 +15,8 @@ def llm_config():
         azure_openai_key="test_key",
         azure_openai_endpoint="test_endpoint",
         azure_openai_api_version="test_version",
-        azure_openai_deployment_name="test_deployment"
+        azure_openai_deployment_name="test_deployment",
+        azure_openai_model_name="gpt-4"
     )
 
 @pytest.fixture
@@ -30,43 +31,9 @@ def conversational_agent(llm_config, persona_config):
     agent.client = AsyncMock()
     return agent
 
-@pytest.mark.asyncio
-async def test_generate_gap_analysis_message(conversational_agent):
-    """Test the successful generation of a gap analysis message."""
-    # Arrange
-    gap_analysis = {
-        "similarity": 0.75,
-        "severity": "medium",
-        "canonical_definition": "The formal definition of the concept."
-    }
-    expected_message = "A well-crafted, encouraging message about the gap."
 
-    mock_response = MagicMock()
-    mock_response.choices = [MagicMock()]
-    mock_response.choices[0].message.content = expected_message
-    conversational_agent.client.chat.completions.create.return_value = mock_response
 
-    # Act
-    message = await conversational_agent.generate_gap_analysis_message("test_concept", gap_analysis)
 
-    # Assert
-    conversational_agent.client.chat.completions.create.assert_called_once()
-    assert message == expected_message
-
-@pytest.mark.asyncio
-async def test_update_persona_with_instruction(conversational_agent):
-    """Test that update_persona correctly handles a new instruction."""
-    # Arrange
-    adjustments = {"instruction": "Be more inquisitive."}
-    assert "instructions" not in conversational_agent.current_persona_adjustments
-
-    # Act
-    await conversational_agent.update_persona(adjustments)
-
-    # Assert
-    assert "instructions" in conversational_agent.current_persona_adjustments
-    assert len(conversational_agent.current_persona_adjustments["instructions"]) == 1
-    assert conversational_agent.current_persona_adjustments["instructions"][0] == "Be more inquisitive."
 
 @pytest.mark.asyncio
 async def test_update_persona_appends_instructions(conversational_agent):

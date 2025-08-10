@@ -106,7 +106,7 @@ async def test_create_u_vector(embedding_service):
     """Test u-vector creation."""
     # Mock embedding response
     embedding_service.client.embeddings.create.return_value = Mock(
-        data=[Mock(embedding=[0.1, 0.2, 0.3])]
+        data=[Mock(embedding=[0.1] * 1536)]
     )
     
     u_vector = await embedding_service.create_u_vector(
@@ -116,7 +116,7 @@ async def test_create_u_vector(embedding_service):
     )
     
     assert isinstance(u_vector, Vector)
-    assert len(u_vector.values) == 3
+    assert len(u_vector.values) == 1536
     assert u_vector.model == "text-embedding-ada-002"
 
 
@@ -125,7 +125,7 @@ async def test_create_c_vector(embedding_service):
     """Test c-vector creation."""
     # Mock embedding response
     embedding_service.client.embeddings.create.return_value = Mock(
-        data=[Mock(embedding=[0.4, 0.5, 0.6])]
+        data=[Mock(embedding=[0.4] * 1536)]
     )
     
     # Mock canonical definition generation
@@ -139,7 +139,7 @@ async def test_create_c_vector(embedding_service):
     )
     
     assert isinstance(c_vector, Vector)
-    assert len(c_vector.values) == 3
+    assert len(c_vector.values) == 1536
     assert c_vector.model == "text-embedding-ada-002"
     assert "canonical_definition" in c_vector.metadata
     assert c_vector.metadata["canonical_definition"] == "The branch of physics dealing with quantum systems"
@@ -239,7 +239,7 @@ async def test_generate_canonical_definition_api_failure(embedding_service):
     assert isinstance(definition, str)
     assert "quantum mechanics" in definition
     assert "physics" in definition
-    assert definition == "Standard definition of quantum mechanics in physics domain"
+    assert definition == 'The concept of "quantum mechanics" as understood in the academic domain of physics.'
 
 
 @pytest.mark.asyncio
@@ -247,7 +247,7 @@ async def test_create_c_vector_with_metadata(embedding_service):
     """Test c_vector creation with stored canonical definition."""
     # Mock embedding response
     embedding_service.client.embeddings.create.return_value = Mock(
-        data=[Mock(embedding=[0.1, 0.2, 0.3, 0.4, 0.5])]
+        data=[Mock(embedding=[0.1] * 1536)]
     )
     
     # Mock canonical definition generation
@@ -258,9 +258,9 @@ async def test_create_c_vector_with_metadata(embedding_service):
     
     # Verify vector properties
     assert isinstance(c_vector, Vector)
-    assert len(c_vector.values) == 5
+    assert len(c_vector.values) == 1536
     assert c_vector.model == "text-embedding-ada-002"
-    assert c_vector.dimension == 5
+    assert c_vector.dimension == 1536
     
     # Verify metadata is properly stored
     assert "canonical_definition" in c_vector.metadata

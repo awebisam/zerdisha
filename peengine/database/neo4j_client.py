@@ -260,6 +260,94 @@ class Neo4jClient:
             result = session.run(query, {"query_text": query_text, "limit": limit})
             return [dict(record["n"]) for record in result]
     
+    def get_session_nodes_and_edges_batch(self, node_ids: List[str], edge_ids: List[str]) -> Dict[str, Any]:
+        """Efficiently fetch session nodes and edges in a single database operation for performance."""
+        if not node_ids and not edge_ids:
+            return {"nodes": [], "edges": []}
+        
+        # Build query parts
+        query_parts = []
+        params = {}
+        
+        # Nodes query part
+        if node_ids:
+            query_parts.append("""
+            UNWIND $node_ids AS node_id
+            MATCH (n:Node {id: node_id})
+            """)
+            params["node_ids"] = node_ids
+        
+        # Edges query part with source/target labels
+        if edge_ids:
+            if query_parts:
+                query_parts.append("WITH collect(n) as nodes")
+            query_parts.append("""
+            UNWIND $edge_ids AS edge_id
+            MATCH (source:Node)-[r:RELATES {id: edge_id}]->(target:Node)
+            """)
+            params["edge_ids"] = edge_ids
+        
+        # Return clause
+        if node_ids and edge_ids:
+            query_parts.append("""
+            RETURN nodes, 
+                   collect({
+                       edge: r, 
+                       source_id: source.id, 
+                       source_label: source.label,
+                       target_id: target.id, 
+                       target_label: target.label
+                   }) as edges
+            """)
+        elif node_ids:
+            query_parts.append("RETURN collect(n) as nodes, [] as edges")
+        else:  # only edge_ids
+            query_parts.append("""
+            RETURN [] as nodes,
+                   collect({
+                       edge: r, 
+                       source_id: source.id, 
+                       source_label: source.label,
+                       target_id: target.id, 
+                       target_label: target.label
+                   }) as edges
+            """)
+        
+        query = "\n".join(query_parts)
+        
+        with self.session() as session:
+            try:
+                result = session.run(query, params)
+                record = result.single()
+                
+                if not record:
+                    return {"nodes": [], "edges": []}
+                
+                # Process nodes
+                nodes = []
+                if record.get("nodes"):
+                    nodes = [dict(node) for node in record["nodes"]]
+                
+                # Process edges
+                edges = []
+                if record.get("edges"):
+                    for edge_data in record["edges"]:
+                        edge_dict = dict(edge_data["edge"])
+                        edge_dict.update({
+                            "source_id": edge_data["source_id"],
+                            "source_label": edge_data["source_label"],
+                            "target_id": edge_data["target_id"],
+                            "target_label": edge_data["target_label"]
+                        })
+                        edges.append(edge_dict)
+                
+                logger.debug(f"Batch fetched {len(nodes)} nodes and {len(edges)} edges")
+                return {"nodes": nodes, "edges": edges}
+                
+            except Exception as e:
+                logger.error(f"Batch fetch failed: {e}")
+                return {"nodes": [], "edges": []}
+    
     def clear_all_data(self) -> Dict[str, Any]:
         """Clear all data from the Neo4j database."""
         stats = {"nodes_deleted": 0, "relationships_deleted": 0, "indexes_dropped": 0}

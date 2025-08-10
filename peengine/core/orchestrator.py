@@ -1,5 +1,7 @@
 """Core orchestrator that manages CA, PD, and MA agents."""
 
+import asyncio
+import json
 import logging
 import uuid
 from datetime import datetime
@@ -199,12 +201,21 @@ class ExplorationEngine:
             ca_response.get("reasoning", {})
         )
         
-        # Apply MA persona adjustments immediately if present
+        # Apply MA persona adjustments immediately if present with validation
         if ma_analysis.get("persona_adjustments"):
             adjustments = ma_analysis["persona_adjustments"]
             logger.info(f"MA provided persona adjustments: {list(adjustments.keys())}")
-            await self.ca.update_persona(adjustments)
-            logger.info(f"Applied persona adjustments to CA for session {self.current_session.id}")
+            
+            try:
+                # Validate adjustments before applying
+                if isinstance(adjustments, dict) and adjustments:
+                    await self.ca.update_persona(adjustments)
+                    logger.info(f"Successfully applied persona adjustments to CA for session {self.current_session.id}")
+                else:
+                    logger.warning(f"Invalid persona adjustments format from MA: {type(adjustments)}")
+            except Exception as persona_error:
+                logger.error(f"Failed to apply persona adjustments: {persona_error}")
+                # Continue processing - persona adjustment failure shouldn't break the conversation
         
         # Update MongoDB with analysis data
         analysis_data = {
@@ -276,38 +287,185 @@ class ExplorationEngine:
         return relevant_nodes
     
     async def _show_session_map(self) -> Dict[str, Any]:
-        """Show current session's concept map with nodes and contextual relationship descriptions."""
+        """Show current session's concept map with comprehensive fallback mechanisms for missing data."""
         if not self.current_session:
-            return {"error": "No active session"}
+            return {
+                "error": "No active session",
+                "message": "🗺️ **Start a session to see your concept map**\n\nThe session map shows concepts and connections you've explored.\n\n*Begin exploring a topic, then use `/map` to visualize your journey.*",
+                "recovery_suggestions": ["Start a new session", "Engage in conversation to create concepts", "Try map after discussing ideas"]
+            }
         
-        # Fetch all nodes created in this session
+        # Initialize collections with error tracking
         nodes = []
-        for node_id in self.current_session.nodes_created:
-            node_data = self.graph_db.get_node(node_id)
-            if node_data:
-                nodes.append(node_data)
-        
-        # Fetch all edges created in this session
         edges = []
-        for edge_id in self.current_session.edges_created:
-            edge_data = self.graph_db.get_edge(edge_id)
-            if edge_data:
-                edges.append(edge_data)
+        missing_nodes = []
+        missing_edges = []
+        node_errors = []
+        edge_errors = []
         
-        # Generate contextual relationship descriptions using LLM
+        # Performance optimization: batch fetch nodes and edges in single database operation
+        logger.debug(f"Batch fetching {len(self.current_session.nodes_created)} nodes and {len(self.current_session.edges_created)} edges for session map")
+        
+        try:
+            batch_result = self.graph_db.get_session_nodes_and_edges_batch(
+                self.current_session.nodes_created,
+                self.current_session.edges_created
+            )
+            
+            nodes = batch_result.get("nodes", [])
+            edges = batch_result.get("edges", [])
+            
+            # Check for missing data
+            fetched_node_ids = {node.get("id") for node in nodes}
+            fetched_edge_ids = {edge.get("id") for edge in edges}
+            
+            missing_nodes = [nid for nid in self.current_session.nodes_created if nid not in fetched_node_ids]
+            missing_edges = [eid for eid in self.current_session.edges_created if eid not in fetched_edge_ids]
+            
+            if missing_nodes:
+                logger.warning(f"Missing {len(missing_nodes)} nodes from batch fetch")
+            if missing_edges:
+                logger.warning(f"Missing {len(missing_edges)} edges from batch fetch")
+                
+        except Exception as batch_error:
+            logger.error(f"Batch fetch failed, falling back to individual queries: {batch_error}")
+            
+            # Fallback to individual queries if batch fails
+            for node_id in self.current_session.nodes_created:
+                try:
+                    node_data = self.graph_db.get_node(node_id)
+                    if node_data:
+                        nodes.append(node_data)
+                    else:
+                        missing_nodes.append(node_id)
+                        logger.warning(f"Node {node_id} not found in database")
+                except Exception as e:
+                    node_errors.append({"node_id": node_id, "error": str(e)})
+                    logger.error(f"Error fetching node {node_id}: {e}")
+            
+            for edge_id in self.current_session.edges_created:
+                try:
+                    edge_data = self.graph_db.get_edge(edge_id)
+                    if edge_data:
+                        edges.append(edge_data)
+                    else:
+                        missing_edges.append(edge_id)
+                        logger.warning(f"Edge {edge_id} not found in database")
+                except Exception as e:
+                    edge_errors.append({"edge_id": edge_id, "error": str(e)})
+                    logger.error(f"Error fetching edge {edge_id}: {e}")
+        
+        # Handle case where no data is available
+        if not nodes and not edges:
+            if self.current_session.nodes_created or self.current_session.edges_created:
+                # Session claims to have data but we can't fetch it
+                return {
+                    "error": "Session data unavailable",
+                    "message": "🔧 **Session map temporarily unavailable**\n\nYour exploration data exists but can't be displayed right now. This might be a database connectivity issue.\n\n*Continue exploring - your progress is being saved. Try the map again in a moment.*",
+                    "recovery_suggestions": ["Try map again in a moment", "Continue exploring", "Check database connectivity"],
+                    "session_id": self.current_session.id,
+                    "topic": self.current_session.topic,
+                    "nodes": [],
+                    "edges": [],
+                    "node_count": 0,
+                    "connection_count": 0,
+                    "data_issues": {
+                        "missing_nodes": len(missing_nodes),
+                        "missing_edges": len(missing_edges),
+                        "node_errors": len(node_errors),
+                        "edge_errors": len(edge_errors)
+                    }
+                }
+            else:
+                # Session genuinely has no data yet
+                return {
+                    "message": "🌱 **Your exploration is just beginning**\n\nNo concepts mapped yet! As you discuss ideas and share your thoughts, I'll create a visual map of your exploration.\n\n*Keep exploring - concepts and connections will appear as we go.*",
+                    "session_id": self.current_session.id,
+                    "topic": self.current_session.topic,
+                    "nodes": [],
+                    "edges": [],
+                    "node_count": 0,
+                    "connection_count": 0,
+                    "status": "empty_session"
+                }
+        
+        # Generate contextual relationship descriptions with error handling
         relationship_descriptions = []
         if edges:
-            relationship_descriptions = await self._generate_relationship_descriptions(nodes, edges)
+            try:
+                relationship_descriptions = await self._generate_relationship_descriptions(nodes, edges)
+            except Exception as desc_error:
+                logger.error(f"Failed to generate relationship descriptions: {desc_error}")
+                # Create fallback descriptions
+                relationship_descriptions = self._create_fallback_relationship_descriptions(nodes, edges)
         
-        return {
+        # Prepare warnings for missing data
+        warnings = []
+        if missing_nodes:
+            warnings.append(f"{len(missing_nodes)} concepts couldn't be displayed")
+        if missing_edges:
+            warnings.append(f"{len(missing_edges)} connections couldn't be displayed")
+        if node_errors:
+            warnings.append(f"{len(node_errors)} concept fetch errors")
+        if edge_errors:
+            warnings.append(f"{len(edge_errors)} connection fetch errors")
+        
+        result = {
             "session_id": self.current_session.id,
             "topic": self.current_session.topic,
             "nodes": nodes,
             "edges": edges,
             "relationship_descriptions": relationship_descriptions,
             "node_count": len(nodes),
-            "connection_count": len(edges)
+            "connection_count": len(edges),
+            "success": True
         }
+        
+        # Add warnings if there were issues
+        if warnings:
+            result["warnings"] = warnings
+            result["data_issues"] = {
+                "missing_nodes": missing_nodes,
+                "missing_edges": missing_edges,
+                "node_errors": node_errors,
+                "edge_errors": edge_errors
+            }
+        
+        return result
+    
+    def _create_fallback_relationship_descriptions(self, nodes: List[Dict], edges: List[Dict]) -> List[str]:
+        """Create simple fallback relationship descriptions when LLM generation fails."""
+        descriptions = []
+        
+        # Create a lookup for node labels
+        node_labels = {node.get('id'): node.get('label', 'Unknown') for node in nodes}
+        
+        for edge in edges:
+            try:
+                source_id = edge.get('source_id')
+                target_id = edge.get('target_id')
+                edge_type = edge.get('edge_type', 'relates')
+                
+                source_label = node_labels.get(source_id, edge.get('source_label', 'Unknown'))
+                target_label = node_labels.get(target_id, edge.get('target_label', 'Unknown'))
+                
+                # Create simple description
+                if edge_type == 'metaphorical':
+                    desc = f"• {source_label} is understood through the metaphor of {target_label}"
+                elif edge_type == 'conceptual':
+                    desc = f"• {source_label} connects conceptually to {target_label}"
+                elif edge_type == 'causal':
+                    desc = f"• {source_label} influences or causes {target_label}"
+                else:
+                    desc = f"• {source_label} relates to {target_label} through {edge_type}"
+                
+                descriptions.append(desc)
+                
+            except Exception as e:
+                logger.warning(f"Error creating fallback description for edge: {e}")
+                descriptions.append("• Connection details unavailable")
+        
+        return descriptions
     
     async def _generate_relationship_descriptions(self, nodes: List[Dict], edges: List[Dict]) -> List[str]:
         """Generate natural language descriptions of concept relationships using LLM."""
@@ -383,11 +541,15 @@ Example format:
 """
 
         try:
-            response = await self.ca.client.chat.completions.create(
-                model=self.ca._get_deployment_name(),
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.6,  # Creative but focused
-                max_tokens=400
+            # Add timeout for performance optimization
+            response = await asyncio.wait_for(
+                self.ca.client.chat.completions.create(
+                    model=self.ca._get_deployment_name(),
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.6,  # Creative but focused
+                    max_tokens=400
+                ),
+                timeout=20.0  # 20 second timeout for relationship descriptions
             )
             
             descriptions_text = response.choices[0].message.content.strip()
@@ -402,51 +564,134 @@ Example format:
             logger.info(f"Generated {len(descriptions)} relationship descriptions")
             return descriptions
             
+        except asyncio.TimeoutError:
+            logger.warning("Relationship description generation timed out, using fallback")
+            return self._create_fallback_relationship_descriptions(nodes, edges)
+            
         except Exception as e:
             logger.error(f"Failed to generate relationship descriptions: {e}")
             # Fallback to simple descriptions
-            return [
-                f"• {edge.get('source_label', 'Unknown')} connects to {edge.get('target_label', 'Unknown')} through {edge.get('edge_type', 'relationship')}"
-                for edge in edges
-            ]
+            return self._create_fallback_relationship_descriptions(nodes, edges)
     
     async def _gap_check(self) -> Dict[str, Any]:
-        """Check gaps between user understanding and canonical knowledge."""
-        if not self.current_session or not self.current_session.messages:
-            return {"error": "No active session or conversation to analyze"}
-        
-        # 1. Identify most recent concept
-        recent_concept = await self._identify_recent_concept()
-        if not recent_concept:
-            return {"error": "No clear concept identified from recent conversation"}
-        
-        # 2. Retrieve u_vector
-        u_vector = await self._get_user_vector(recent_concept)
-        if not u_vector:
-            return {"error": f"No user understanding vector found for '{recent_concept}'"}
-        
-        # 3. Get or create c_vector
-        c_vector = await self._get_or_create_canonical_vector(recent_concept)
-        if not c_vector:
-            return {"error": f"Failed to obtain canonical vector for '{recent_concept}'"}
-        
-        # 4. Calculate gap
-        gap_analysis = self.embedding_service.calculate_gap_score(u_vector, c_vector)
-        
-        # 5. Generate user message
+        """Check gaps between user understanding and canonical knowledge with comprehensive error handling."""
         try:
-            message = await self._format_gap_message(recent_concept, gap_analysis)
+            # Validate session state
+            if not self.current_session:
+                return {
+                    "error": "No active session found",
+                    "message": "🔄 **Start a session first**\n\nUse a topic to begin exploring, then try gap check again.\n\n*Example: Start discussing quantum mechanics, then use `/gapcheck` to analyze your understanding.*",
+                    "recovery_suggestions": ["Start a new session with a topic", "Engage in conversation about concepts", "Try gap check after discussing specific ideas"]
+                }
+            
+            if not self.current_session.messages:
+                return {
+                    "error": "No conversation to analyze",
+                    "message": "💭 **Let's explore some ideas first**\n\nGap check works best after you've discussed concepts and shared your thoughts.\n\n*Try explaining a concept or asking questions, then use `/gapcheck` to see how your understanding compares to canonical knowledge.*",
+                    "recovery_suggestions": ["Share your thoughts on the session topic", "Ask questions about concepts", "Explain ideas using your own words and metaphors"]
+                }
+            
+            # 1. Identify most recent concept with error handling
+            recent_concept = None
+            try:
+                recent_concept = await self._identify_recent_concept()
+            except Exception as e:
+                logger.error(f"Concept identification failed: {e}")
+                return {
+                    "error": "Failed to identify concept from conversation",
+                    "message": "🤔 **Having trouble identifying the main concept**\n\nThis might happen if the conversation covers many topics. Try discussing a specific concept more directly.\n\n*Example: 'I think of quantum superposition like...' or 'My understanding of entropy is...'*",
+                    "recovery_suggestions": ["Focus on one specific concept", "Use clear concept names in your explanations", "Try rephrasing your thoughts about the topic"]
+                }
+            
+            if not recent_concept:
+                return {
+                    "error": "No clear concept identified from recent conversation",
+                    "message": "🎯 **Let's focus on a specific concept**\n\nGap check works best when we can identify a clear concept from your recent discussion.\n\n*Try mentioning specific terms or explaining particular ideas you're exploring.*",
+                    "recovery_suggestions": ["Mention specific concept names", "Explain particular ideas in detail", "Ask about specific aspects of the topic"]
+                }
+            
+            # 2. Retrieve u_vector with error handling
+            u_vector = None
+            try:
+                u_vector = await self._get_user_vector(recent_concept)
+            except Exception as e:
+                logger.error(f"Failed to retrieve u_vector for {recent_concept}: {e}")
+                return {
+                    "error": f"Database error retrieving understanding for '{recent_concept}'",
+                    "message": f"⚠️ **Technical issue accessing your understanding of '{recent_concept}'**\n\nThis might be a temporary database issue. Your exploration data is safe.\n\n*Try the gap check again in a moment, or continue exploring other concepts.*",
+                    "recovery_suggestions": ["Try gap check again in a moment", "Continue exploring other concepts", "Check if the database connection is stable"]
+                }
+            
+            if not u_vector:
+                return {
+                    "error": f"No user understanding vector found for '{recent_concept}'",
+                    "message": f"📚 **Need more exploration of '{recent_concept}'**\n\nI haven't captured enough of your personal understanding yet. Share more of your thoughts, metaphors, or explanations about this concept.\n\n*Try explaining how you think about '{recent_concept}' or what it reminds you of.*",
+                    "recovery_suggestions": [f"Explain your understanding of '{recent_concept}' in your own words", f"Share metaphors or analogies for '{recent_concept}'", f"Discuss what '{recent_concept}' means to you"]
+                }
+            
+            # 3. Get or create c_vector with comprehensive error handling
+            c_vector = None
+            try:
+                c_vector = await self._get_or_create_canonical_vector(recent_concept)
+            except Exception as e:
+                logger.error(f"Failed to get/create c_vector for {recent_concept}: {e}")
+                # Check if it's an API issue or database issue
+                if "openai" in str(e).lower() or "api" in str(e).lower():
+                    return {
+                        "error": f"AI service unavailable for canonical analysis of '{recent_concept}'",
+                        "message": f"🌐 **AI service temporarily unavailable**\n\nI can't generate the canonical definition for '{recent_concept}' right now due to connectivity issues.\n\n*Your exploration continues! Try gap check again later, or explore other aspects of the topic.*",
+                        "recovery_suggestions": ["Try gap check again later", "Continue exploring other concepts", "Check internet connectivity"]
+                    }
+                else:
+                    return {
+                        "error": f"Failed to obtain canonical vector for '{recent_concept}'",
+                        "message": f"⚠️ **Technical issue with canonical knowledge for '{recent_concept}'**\n\nThere was a problem accessing or creating the canonical understanding. This doesn't affect your exploration.\n\n*Continue exploring, and we can try gap analysis again later.*",
+                        "recovery_suggestions": ["Continue exploring the concept", "Try gap check again later", "Explore related concepts"]
+                    }
+            
+            if not c_vector:
+                return {
+                    "error": f"Failed to obtain canonical vector for '{recent_concept}'",
+                    "message": f"📖 **Canonical knowledge unavailable for '{recent_concept}'**\n\nI couldn't access or generate the standard academic understanding of this concept right now.\n\n*Your personal exploration is still valuable! Continue developing your understanding.*",
+                    "recovery_suggestions": ["Continue exploring your understanding", "Try gap check with other concepts", "Explore related ideas"]
+                }
+            
+            # 4. Calculate gap with error handling
+            gap_analysis = None
+            try:
+                gap_analysis = self.embedding_service.calculate_gap_score(u_vector, c_vector)
+            except Exception as e:
+                logger.error(f"Gap calculation failed for {recent_concept}: {e}")
+                return {
+                    "error": f"Failed to calculate understanding gap for '{recent_concept}'",
+                    "message": f"🔢 **Analysis calculation issue**\n\nThere was a problem comparing your understanding with canonical knowledge for '{recent_concept}'.\n\n*This might be due to vector dimension mismatches or calculation errors. Your exploration data is intact.*",
+                    "recovery_suggestions": ["Try gap check again", "Continue exploring the concept", "Try gap check with other concepts"]
+                }
+            
+            # 5. Generate user message with fallback
+            message = None
+            try:
+                message = await self._format_gap_message(recent_concept, gap_analysis)
+            except Exception as e:
+                logger.error(f"Failed to format gap message: {e}")
+                message = self._fallback_gap_message(recent_concept, gap_analysis)
+            
+            return {
+                "concept": recent_concept,
+                "similarity": gap_analysis["similarity"],
+                "gap_score": gap_analysis["gap_score"],
+                "severity": gap_analysis["severity"],
+                "message": message,
+                "success": True
+            }
+            
         except Exception as e:
-            logger.error(f"Failed to format gap message: {e}")
-            message = self._fallback_gap_message(recent_concept, gap_analysis)
-        
-        return {
-            "concept": recent_concept,
-            "similarity": gap_analysis["similarity"],
-            "gap_score": gap_analysis["gap_score"],
-            "severity": gap_analysis["severity"],
-            "message": message
-        }
+            logger.error(f"Unexpected error in gap check: {e}")
+            return {
+                "error": "Unexpected gap check failure",
+                "message": "⚠️ **Unexpected issue with gap analysis**\n\nSomething unexpected happened during the gap check process. Your exploration data is safe.\n\n*Try continuing your exploration and attempt gap check again later.*",
+                "recovery_suggestions": ["Continue your exploration", "Try gap check again later", "Restart the session if issues persist"]
+            }
     
     async def _inject_seed(self) -> Dict[str, Any]:
         """Inject a new exploration seed from MA."""
@@ -461,14 +706,28 @@ Example format:
         }
     
     async def _identify_recent_concept(self) -> Optional[str]:
-        """Extract the most recently discussed concept using a direct LLM call for simplicity and accuracy."""
+        """Extract the most recently discussed concept using a direct LLM call with conversation history limiting for performance."""
         if not self.current_session or not self.current_session.messages:
             return None
 
-        recent_messages_formatted = "\n".join([
-            f"User: {msg.get('user', '')}\nAssistant: {msg.get('assistant', '')}"
-            for msg in self.current_session.messages[-6:] # Last 3 exchanges
-        ])
+        # Performance optimization: limit to last 4 exchanges (8 messages) for faster processing
+        recent_messages = self.current_session.messages[-4:]  # Last 4 exchanges only
+        
+        # Further optimize by truncating very long messages
+        recent_messages_formatted = []
+        for msg in recent_messages:
+            user_msg = msg.get('user', '')
+            assistant_msg = msg.get('assistant', '')
+            
+            # Truncate messages if they're too long (performance optimization)
+            if len(user_msg) > 500:
+                user_msg = user_msg[:500] + "..."
+            if len(assistant_msg) > 500:
+                assistant_msg = assistant_msg[:500] + "..."
+            
+            recent_messages_formatted.append(f"User: {user_msg}\nAssistant: {assistant_msg}")
+
+        conversation_text = "\n".join(recent_messages_formatted)
 
         prompt = f"""
 Given the following recent conversation history, what is the single, most prominent concept being discussed?
@@ -476,21 +735,28 @@ Respond with only the concept name and nothing else.
 
 Conversation:
 ---
-{recent_messages_formatted}
+{conversation_text}
 ---
 
 Concept:"""
 
         try:
-            response = await self.ca.client.chat.completions.create(
-                model=self.ca._get_deployment_name(),
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                max_tokens=50
+            # Add timeout for performance
+            response = await asyncio.wait_for(
+                self.ca.client.chat.completions.create(
+                    model=self.ca._get_deployment_name(),
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.0,
+                    max_tokens=50
+                ),
+                timeout=15.0  # 15 second timeout for concept identification
             )
             concept = response.choices[0].message.content.strip().replace('"', '')
             logger.info(f"Identified recent concept via LLM: {concept}")
             return concept
+        except asyncio.TimeoutError:
+            logger.warning("Concept identification timed out, using session topic as fallback")
+            return self.current_session.topic
         except Exception as e:
             logger.error(f"LLM-based concept identification failed: {e}")
             # Fallback to topic as a last resort
@@ -535,77 +801,186 @@ Concept:"""
         return None
     
     async def _get_or_create_canonical_vector(self, concept: str) -> Optional[Vector]:
-        """Fetch existing c_vector or generate new one with enhanced domain intelligence."""
+        """Fetch existing c_vector or generate new one with graceful degradation when OpenAI API is unavailable."""
         try:
             # First, try to find existing c_vector in the database
-            all_concept_nodes = self.graph_db.search_nodes_by_content(concept, limit=10)
+            all_concept_nodes = []
+            try:
+                all_concept_nodes = self.graph_db.search_nodes_by_content(concept, limit=10)
+            except Exception as db_error:
+                logger.error(f"Database search failed for {concept}: {db_error}")
+                # Continue with empty list - we'll try to create new vector
+            
+            # Check existing nodes for c_vector
             for node_data in all_concept_nodes:
-                if (node_data.get('node_type') == 'concept' and 
-                    node_data.get('label', '').lower() == concept.lower() and
-                    node_data.get('c_vector')):
-                    c_vector_data = node_data['c_vector']
-                    return Vector(
-                        values=c_vector_data.get('values', []),
-                        model=c_vector_data.get('model', 'text-embedding-ada-002'),
-                        dimension=c_vector_data.get('dimension', 1536)
-                    )
+                try:
+                    if (node_data.get('node_type') == 'concept' and 
+                        node_data.get('label', '').lower() == concept.lower() and
+                        node_data.get('c_vector')):
+                        c_vector_data = node_data['c_vector']
+                        logger.info(f"Found existing c_vector for {concept}")
+                        return Vector(
+                            values=c_vector_data.get('values', []),
+                            model=c_vector_data.get('model', 'text-embedding-ada-002'),
+                            dimension=c_vector_data.get('dimension', 1536),
+                            metadata=c_vector_data.get('metadata', {})
+                        )
+                except Exception as node_error:
+                    logger.warning(f"Error processing existing node for {concept}: {node_error}")
+                    continue
             
-            # If no existing c_vector, generate a new one with enhanced domain detection
-            domain = await self._detect_concept_domain(concept)
+            # If no existing c_vector, try to generate a new one with graceful degradation
+            logger.info(f"No existing c_vector found for {concept}, attempting to create new one")
             
-            # Generate canonical definition with domain-specific intelligence
-            canonical_definition = await self.embedding_service.generate_canonical_definition(concept, domain)
+            # Step 1: Detect domain with fallback
+            domain = "general"  # Default fallback
+            try:
+                domain = await self._detect_concept_domain(concept)
+            except Exception as domain_error:
+                logger.warning(f"Domain detection failed for {concept}, using 'general': {domain_error}")
+                # Use session topic for basic domain inference as fallback
+                if self.current_session and self.current_session.topic:
+                    topic_lower = self.current_session.topic.lower()
+                    if any(word in topic_lower for word in ['physics', 'quantum', 'energy']):
+                        domain = 'physics'
+                    elif any(word in topic_lower for word in ['chemistry', 'molecule', 'reaction']):
+                        domain = 'chemistry'
+                    elif any(word in topic_lower for word in ['biology', 'life', 'evolution']):
+                        domain = 'biology'
+                    elif any(word in topic_lower for word in ['math', 'equation', 'number']):
+                        domain = 'mathematics'
+                    elif any(word in topic_lower for word in ['philosophy', 'ethics', 'consciousness']):
+                        domain = 'philosophy'
             
-            # Create c_vector with enhanced metadata
-            c_vector = await self.embedding_service.create_c_vector(concept, domain)
+            # Step 2: Try to create c_vector with multiple fallback strategies
+            c_vector = None
+            canonical_definition = f"Standard academic definition of {concept} in {domain} domain"
             
-            # Save c_vector to Neo4j by updating or creating a concept node
-            concept_node_id = None
+            try:
+                # Primary attempt: Full LLM-powered generation
+                c_vector = await self.embedding_service.create_c_vector(concept, domain)
+                if c_vector and c_vector.metadata:
+                    canonical_definition = c_vector.metadata.get("canonical_definition", canonical_definition)
+                logger.info(f"Successfully created c_vector for {concept} using LLM")
+                
+            except Exception as llm_error:
+                logger.warning(f"LLM-powered c_vector creation failed for {concept}: {llm_error}")
+                
+                # Fallback 1: Try with basic definition and embedding
+                try:
+                    basic_definition = f"The concept of {concept} in the context of {domain}. This represents the formal academic understanding of {concept}."
+                    embedding_values = await self.embedding_service._get_embedding(basic_definition)
+                    
+                    if embedding_values and len(embedding_values) > 0:
+                        c_vector = Vector(
+                            values=embedding_values,
+                            model="text-embedding-ada-002",
+                            dimension=len(embedding_values),
+                            metadata={
+                                "canonical_definition": basic_definition,
+                                "concept": concept,
+                                "domain": domain,
+                                "vector_type": "c_vector",
+                                "fallback_method": "basic_definition"
+                            }
+                        )
+                        canonical_definition = basic_definition
+                        logger.info(f"Created fallback c_vector for {concept} using basic definition")
+                    
+                except Exception as fallback_error:
+                    logger.warning(f"Basic definition fallback failed for {concept}: {fallback_error}")
+                    
+                    # Fallback 2: Create minimal vector from concept name only
+                    try:
+                        minimal_text = f"{concept} {domain}"
+                        embedding_values = await self.embedding_service._get_embedding(minimal_text)
+                        
+                        if embedding_values and len(embedding_values) > 0:
+                            c_vector = Vector(
+                                values=embedding_values,
+                                model="text-embedding-ada-002",
+                                dimension=len(embedding_values),
+                                metadata={
+                                    "canonical_definition": f"Minimal representation of {concept}",
+                                    "concept": concept,
+                                    "domain": domain,
+                                    "vector_type": "c_vector",
+                                    "fallback_method": "minimal_text"
+                                }
+                            )
+                            canonical_definition = f"Minimal representation of {concept}"
+                            logger.info(f"Created minimal c_vector for {concept} from concept name")
+                        
+                    except Exception as minimal_error:
+                        logger.error(f"All c_vector creation methods failed for {concept}: {minimal_error}")
+                        return None
             
-            # Try to find existing concept node to update
-            for node_data in all_concept_nodes:
-                if (node_data.get('node_type') == 'concept' and 
-                    node_data.get('label', '').lower() == concept.lower()):
-                    concept_node_id = node_data.get('id')
-                    break
+            if not c_vector:
+                logger.error(f"Failed to create any c_vector for {concept}")
+                return None
             
-            # Create or update the node with c_vector
-            if concept_node_id:
-                # Update existing node
-                node_data = self.graph_db.get_node(concept_node_id)
-                if node_data:
-                    updated_node = Node(
-                        id=concept_node_id,
-                        label=concept,
-                        node_type=NodeType.CONCEPT,
-                        properties={
-                            **node_data.get('properties', {}),
-                            'domain': domain,
-                            'canonical_definition': canonical_definition
-                        },
-                        u_vector=Vector(**node_data['u_vector']) if node_data.get('u_vector') else None,
-                        c_vector=c_vector
-                    )
-                    self.graph_db.create_node(updated_node)
-            else:
-                # Create new node with c_vector
-                new_node = Node(
-                    id=str(uuid.uuid4()),
-                    label=concept,
-                    node_type=NodeType.CONCEPT,
-                    properties={
-                        'domain': domain,
-                        'canonical_definition': canonical_definition,
-                        'session_id': self.current_session.id if self.current_session else None
-                    },
-                    c_vector=c_vector
-                )
-                self.graph_db.create_node(new_node)
+            # Step 3: Try to save c_vector to Neo4j with error handling
+            try:
+                concept_node_id = None
+                
+                # Try to find existing concept node to update
+                for node_data in all_concept_nodes:
+                    if (node_data.get('node_type') == 'concept' and 
+                        node_data.get('label', '').lower() == concept.lower()):
+                        concept_node_id = node_data.get('id')
+                        break
+                
+                # Create or update the node with c_vector
+                if concept_node_id:
+                    # Update existing node
+                    try:
+                        node_data = self.graph_db.get_node(concept_node_id)
+                        if node_data:
+                            updated_node = Node(
+                                id=concept_node_id,
+                                label=concept,
+                                node_type=NodeType.CONCEPT,
+                                properties={
+                                    **node_data.get('properties', {}),
+                                    'domain': domain,
+                                    'canonical_definition': canonical_definition
+                                },
+                                u_vector=Vector(**node_data['u_vector']) if node_data.get('u_vector') else None,
+                                c_vector=c_vector
+                            )
+                            self.graph_db.create_node(updated_node)
+                            logger.info(f"Updated existing node {concept_node_id} with c_vector for {concept}")
+                    except Exception as update_error:
+                        logger.warning(f"Failed to update existing node for {concept}: {update_error}")
+                        # Continue - we still have the c_vector even if saving failed
+                else:
+                    # Create new node with c_vector
+                    try:
+                        new_node = Node(
+                            id=str(uuid.uuid4()),
+                            label=concept,
+                            node_type=NodeType.CONCEPT,
+                            properties={
+                                'domain': domain,
+                                'canonical_definition': canonical_definition,
+                                'session_id': self.current_session.id if self.current_session else None
+                            },
+                            c_vector=c_vector
+                        )
+                        self.graph_db.create_node(new_node)
+                        logger.info(f"Created new node with c_vector for {concept}")
+                    except Exception as create_error:
+                        logger.warning(f"Failed to create new node for {concept}: {create_error}")
+                        # Continue - we still have the c_vector even if saving failed
+                        
+            except Exception as save_error:
+                logger.warning(f"Failed to save c_vector to database for {concept}: {save_error}")
+                # Continue - we still return the c_vector even if saving failed
             
             return c_vector
             
         except Exception as e:
-            logger.error(f"Failed to get or create c_vector for {concept}: {e}")
+            logger.error(f"Unexpected error in _get_or_create_canonical_vector for {concept}: {e}")
             return None
     
     async def _detect_concept_domain(self, concept: str) -> str:
