@@ -70,7 +70,7 @@ class Neo4jClient:
                     logger.warning(f"Index creation failed (may already exist): {e}")
     
     def create_node(self, node: Node) -> bool:
-        """Create a node in the graph."""
+        """Create or update a node in the graph (idempotent using MERGE)."""
         # Flatten properties into the main node structure
         flattened_properties = {
             "id": node.id,
@@ -83,21 +83,21 @@ class Neo4jClient:
             **node.properties  # Flatten custom properties directly into node
         }
         
-        # Build dynamic query based on available properties
-        property_assignments = ", ".join([f"{key}: ${key}" for key in flattened_properties.keys()])
-        query = f"CREATE (n:Node {{ {property_assignments} }})"
+        # Use MERGE for idempotency - match on ID, then set all properties
+        set_assignments = ", ".join([f"n.{key} = ${key}" for key in flattened_properties.keys()])
+        query = f"MERGE (n:Node {{id: $id}}) SET {set_assignments}"
         
         with self.session() as session:
             try:
                 result = session.run(query, flattened_properties)
-                logger.info(f"Created node: {node.id}")
+                logger.info(f"Merged node: {node.id}")
                 return True
             except Exception as e:
-                logger.error(f"Failed to create node {node.id}: {e}")
+                logger.error(f"Failed to merge node {node.id}: {e}")
                 return False
     
     def create_edge(self, edge: Edge) -> bool:
-        """Create an edge between nodes."""
+        """Create or update an edge between nodes (idempotent using MERGE)."""
         # Flatten properties into the main edge structure
         flattened_properties = {
             "id": edge.id,
@@ -110,21 +110,22 @@ class Neo4jClient:
             **edge.properties  # Flatten custom properties directly into edge
         }
         
-        # Build dynamic query for edge properties (excluding source/target IDs)
-        edge_property_assignments = ", ".join([f"{key}: ${key}" for key in flattened_properties.keys() if key not in ["source_id", "target_id"]])
+        # Use MERGE for idempotency - match on ID and endpoints, then set all properties
+        edge_set_assignments = ", ".join([f"r.{key} = ${key}" for key in flattened_properties.keys() if key not in ["source_id", "target_id"]])
         query = f"""
         MATCH (source:Node {{id: $source_id}})
         MATCH (target:Node {{id: $target_id}})
-        CREATE (source)-[r:RELATES {{ {edge_property_assignments} }}]->(target)
+        MERGE (source)-[r:RELATES {{id: $id}}]->(target)
+        SET {edge_set_assignments}
         """
         
         with self.session() as session:
             try:
                 result = session.run(query, flattened_properties)
-                logger.info(f"Created edge: {edge.id}")
+                logger.info(f"Merged edge: {edge.id}")
                 return True
             except Exception as e:
-                logger.error(f"Failed to create edge {edge.id}: {e}")
+                logger.error(f"Failed to merge edge {edge.id}: {e}")
                 return False
     
     def get_node(self, node_id: str) -> Optional[Dict[str, Any]]:
@@ -159,20 +160,18 @@ class Neo4jClient:
             return [dict(record["connected"]) for record in result]
     
     def create_session_summary(self, session: Session) -> bool:
-        """Create a session summary node in the knowledge graph (not full transcript)."""
+        """Create or update a session summary node in the knowledge graph (idempotent using MERGE)."""
         query = """
-        CREATE (s:Session {
-            id: $id,
-            title: $title,
-            topic: $topic,
-            start_time: $start_time,
-            end_time: $end_time,
-            nodes_created: $nodes_created,
-            edges_created: $edges_created,
-            status: $status,
-            concept_count: $concept_count,
-            exchange_count: $exchange_count
-        })
+        MERGE (s:Session {id: $id})
+        SET s.title = $title,
+            s.topic = $topic,
+            s.start_time = $start_time,
+            s.end_time = $end_time,
+            s.nodes_created = $nodes_created,
+            s.edges_created = $edges_created,
+            s.status = $status,
+            s.concept_count = $concept_count,
+            s.exchange_count = $exchange_count
         """
         
         with self.session() as session_db:
@@ -189,7 +188,7 @@ class Neo4jClient:
                     "concept_count": len(session.nodes_created),
                     "exchange_count": len(session.messages)
                 })
-                logger.info(f"Created session summary in graph: {session.id}")
+                logger.info(f"Merged session summary in graph: {session.id}")
                 return True
             except Exception as e:
                 logger.error(f"Failed to create session summary {session.id}: {e}")
