@@ -411,5 +411,5 @@ Find where metaphors connect these concepts across domains. Return JSON:
         """Get statistics about pattern extraction performance."""
         return {
             "templates_loaded": len(self.extraction_templates),
-            "model": self.llm_config.model
+            "model": self.llm_config.primary_model
         }

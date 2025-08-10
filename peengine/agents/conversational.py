@@ -169,7 +169,7 @@ You are a Socratic learning guide focused on exploration through metaphors and q
             
             # Extract reasoning/metadata if needed
             reasoning = {
-                "model": self.llm_config.model,
+                "model": self.llm_config.primary_model,
                 "tokens_used": response.usage.total_tokens if response.usage else 0,
                 "finish_reason": response.choices[0].finish_reason
             }

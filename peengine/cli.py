@@ -41,13 +41,18 @@ def setup_logging(log_level: str = "INFO"):
     )
 
 
-async def initialize_engine() -> ExplorationEngine:
+async def initialize_engine(verbose: bool = False) -> ExplorationEngine:
     """Initialize the exploration engine."""
     global engine
     if engine is None:
         try:
             settings = Settings()
-            setup_logging(settings.log_level)
+            # Only setup logging if verbose mode is enabled
+            if verbose:
+                setup_logging(settings.log_level)
+            else:
+                # Set logging to ERROR level to suppress most logs
+                setup_logging("ERROR")
             engine = ExplorationEngine(settings)
             await engine.initialize()
             console.print("[green]✓[/green] Exploration Engine initialized")
@@ -60,11 +65,12 @@ async def initialize_engine() -> ExplorationEngine:
 @app.command()
 def start(
     topic: str = typer.Argument(..., help="Topic to explore"),
-    title: Optional[str] = typer.Option(None, "--title", "-t", help="Session title")
+    title: Optional[str] = typer.Option(None, "--title", "-t", help="Session title"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging")
 ):
     """Start a new exploration session."""
     async def _start_session():
-        engine = await initialize_engine()
+        engine = await initialize_engine(verbose)
         
         try:
             session = await engine.start_session(topic, title)
@@ -289,11 +295,13 @@ def review(
 
 
 @app.command()
-def status():
+def status(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging")
+):
     """Show engine status and configuration."""
     async def _show_status():
         try:
-            engine = await initialize_engine()
+            engine = await initialize_engine(verbose)
             
             table = Table(title="🧠 Personal Exploration Engine Status")
             table.add_column("Component", style="cyan")
@@ -314,7 +322,9 @@ def status():
 
 
 @app.command()
-def init():
+def init(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging")
+):
     """Initialize configuration and check dependencies."""
     console.print("🔧 Initializing Personal Exploration Engine...")
     
@@ -339,14 +349,20 @@ def init():
 
 
 @app.command(name="import-graphs")
-def import_knowledge_graphs():
+def import_knowledge_graphs(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging")
+):
     """Import existing knowledge graphs from JSON files into Neo4j."""
     async def _import_graphs():
         console.print("🧠 Importing existing knowledge graphs...")
         
         try:
             settings = Settings()
-            setup_logging(settings.log_level)
+            # Only setup logging if verbose mode is enabled
+            if verbose:
+                setup_logging(settings.log_level)
+            else:
+                setup_logging("ERROR")
             
             importer = KnowledgeGraphImporter(settings)
             results = await importer.import_all_graphs()
@@ -387,12 +403,18 @@ def import_knowledge_graphs():
 
 
 @app.command(name="start-fresh")  
-def start_fresh():
+def start_fresh(
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable verbose logging")
+):
     """Clear all databases and start completely fresh. DESTRUCTIVE OPERATION!"""
     async def _clear_databases():
         try:
             settings = Settings()
-            setup_logging(settings.log_level)
+            # Only setup logging if verbose mode is enabled
+            if verbose:
+                setup_logging(settings.log_level)
+            else:
+                setup_logging("ERROR")
             
             from .tools.clear_databases import DatabaseCleaner
             cleaner = DatabaseCleaner(settings)
