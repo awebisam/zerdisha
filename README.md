@@ -187,6 +187,10 @@ This is primarily a personal learning experiment. If you're interested in the ap
 
 MIT License - See LICENSE file for details.
 
+## 🧰 Developer guide
+
+If you're working on the codebase, see `.github/DEVELOPER_HELP.md` for a quick repo map, environment variables, CLI workflow, and troubleshooting tips.
+
 ---
 
 *"The best way to understand a system is to try to change it."* - Kurt Lewin

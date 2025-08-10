@@ -1,6 +1,7 @@
 """Conversational Agent - The Socratic guide using metaphors."""
 
 import logging
+import asyncio
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 import json
@@ -8,24 +9,27 @@ import json
 from openai import AsyncAzureOpenAI
 
 from ..models.config import LLMConfig, PersonaConfig
+from ..core.llm_client import AzureLLMClient
+from ..core.prompts import CA_PERSONA_SYNTHESIS
+from ..core.json_utils import safe_load_json
 
 logger = logging.getLogger(__name__)
 
 
 class ConversationalAgent:
     """Socratic conversational agent that guides exploration through metaphors."""
-    
+
     def __init__(self, llm_config: LLMConfig, persona_config: PersonaConfig):
         self.llm_config = llm_config
         self.persona_config = persona_config
-        
+
         # Initialize Azure OpenAI client
         self.client = AsyncAzureOpenAI(
             api_key=llm_config.azure_openai_key,
             azure_endpoint=llm_config.azure_openai_endpoint,
             api_version=llm_config.azure_openai_api_version
         )
-        
+
         # Fallback client for Azure AI Foundry (if configured)
         self.fallback_client = None
         if llm_config.azure_ai_foundry_key and llm_config.azure_ai_foundry_endpoint:
@@ -34,58 +38,73 @@ class ConversationalAgent:
                 azure_endpoint=llm_config.azure_ai_foundry_endpoint,
                 api_version=llm_config.azure_openai_api_version
             )
-        
+
+        # Shared Responses-first client (used for structured persona synthesis)
+        self.shared_llm = AzureLLMClient(
+            api_key=llm_config.azure_openai_key,
+            endpoint=llm_config.azure_openai_endpoint,
+            api_version=llm_config.azure_openai_api_version,
+            deployment=llm_config.azure_openai_deployment_name,
+        )
+
         # Persona and context
         self.base_persona = ""
         self.current_persona_adjustments = {}
         self.session_context = {}
-        
+
         # Conversation history for current session
         self.conversation_history: List[Dict[str, str]] = []
-    
+
     def _get_deployment_name(self) -> str:
         """Get the deployment name for Azure OpenAI."""
         return self.llm_config.azure_openai_deployment_name
-    
-    async def _make_completion_request(self, messages: List[Dict[str, str]], temperature: float = None, max_tokens: int = None):
+
+    async def _make_completion_request(self, messages: List[Dict[str, str]], temperature: float = None, max_tokens: int = None, timeout_s: float = 20.0):
         """Make completion request with fallback support."""
         temperature = temperature or self.llm_config.temperature
         max_tokens = max_tokens or self.llm_config.max_tokens
-        
+
         try:
             # Try primary Azure OpenAI client
-            response = await self.client.chat.completions.create(
-                model=self._get_deployment_name(),
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens
+            response = await asyncio.wait_for(
+                self.client.chat.completions.create(
+                    model=self._get_deployment_name(),
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                ),
+                timeout=timeout_s,
             )
             return response
         except Exception as e:
             logger.warning(f"Primary Azure OpenAI failed: {e}")
-            
+
             # Try fallback client if available
             if self.fallback_client:
                 try:
-                    response = await self.fallback_client.chat.completions.create(
-                        model=self.llm_config.fallback_model,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens
+                    response = await asyncio.wait_for(
+                        self.fallback_client.chat.completions.create(
+                            model=self.llm_config.fallback_model,
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens
+                        ),
+                        timeout=timeout_s,
                     )
                     logger.info("Used fallback Azure AI Foundry client")
                     return response
                 except Exception as fallback_e:
-                    logger.error(f"Fallback Azure AI Foundry also failed: {fallback_e}")
-            
+                    logger.error(
+                        f"Fallback Azure AI Foundry also failed: {fallback_e}")
+
             # Re-raise original exception if no fallback or fallback failed
             raise e
-        
+
     async def initialize(self) -> None:
         """Initialize the agent by loading persona."""
         await self._load_persona()
         logger.info("Conversational Agent initialized")
-    
+
     async def _load_persona(self) -> None:
         """Load persona from markdown file."""
         try:
@@ -99,7 +118,7 @@ class ConversationalAgent:
         except Exception as e:
             logger.error(f"Failed to load persona: {e}")
             self.base_persona = self._get_default_persona()
-    
+
     def _get_default_persona(self) -> str:
         """Get default persona if file loading fails."""
         return '''
@@ -128,7 +147,7 @@ You are a Socratic learning guide focused on exploration through metaphors and q
 - Academic jargon without metaphorical bridges
 - Overwhelming with too many concepts at once
 '''
-    
+
     async def start_session(self, topic: str, relevant_context: List[Dict[str, Any]]) -> None:
         """Start a new session with topic and relevant context."""
         self.session_context = {
@@ -137,55 +156,57 @@ You are a Socratic learning guide focused on exploration through metaphors and q
             "session_start": True
         }
         self.conversation_history = []
-        
+
         logger.info(f"CA started session for topic: {topic}")
-    
+
     async def process_input(self, user_input: str) -> Dict[str, Any]:
         """Process user input and generate Socratic response."""
-        
+
         # Build conversation context
         system_prompt = self._build_system_prompt()
-        
+
         # Add user input to history
-        self.conversation_history.append({"role": "user", "content": user_input})
-        
+        self.conversation_history.append(
+            {"role": "user", "content": user_input})
+
         # Build messages for OpenAI
         messages = [{"role": "system", "content": system_prompt}]
-        
+
         # Add recent conversation history (last 10 exchanges to avoid token limits)
-        recent_history = self.conversation_history[-20:]  # Last 10 user-assistant pairs
+        # Last 10 user-assistant pairs
+        recent_history = self.conversation_history[-20:]
         messages.extend(recent_history)
-        
+
         try:
             response = await self._make_completion_request(messages)
-            
+
             assistant_message = response.choices[0].message.content
-            
+
             # Add assistant response to history
             self.conversation_history.append({
-                "role": "assistant", 
+                "role": "assistant",
                 "content": assistant_message
             })
-            
+
             # Extract reasoning/metadata if needed
             reasoning = {
                 "model": self.llm_config.primary_model,
                 "tokens_used": response.usage.total_tokens if response.usage else 0,
                 "finish_reason": response.choices[0].finish_reason
             }
-            
+
             return {
                 "message": assistant_message,
                 "reasoning": reasoning
             }
-            
+
         except Exception as e:
             logger.error(f"Failed to get LLM response: {e}")
             return {
                 "message": "I apologize, but I'm having trouble processing that right now. Could you rephrase your thought?",
                 "reasoning": {"error": str(e)}
             }
-    
+
     def _build_system_prompt(self) -> str:
         """Build the system prompt with persona and context."""
         prompt_parts = [self.base_persona]
@@ -198,26 +219,29 @@ You are a Socratic learning guide focused on exploration through metaphors and q
 
         # Add persona adjustments from MA
         if self.current_persona_adjustments:
-            adjustments_text = "\n".join(self.current_persona_adjustments.get("instructions", []))
+            instructions = self.current_persona_adjustments.get(
+                "instructions", [])
+            bullets = "\n".join(
+                f"- {line}" for line in instructions) if instructions else ""
             prompt_parts.append(f"""
 ## Metacognitive Adjustments:
 Follow these instructions for the next turn:
-- {adjustments_text}
+{bullets}
 """)
 
         return "\n".join(prompt_parts)
-    
+
     def _summarize_relevant_context(self, context_nodes: List[Dict[str, Any]]) -> str:
         """Summarize relevant context from past sessions."""
         if not context_nodes:
             return "No relevant past explorations found."
-        
+
         summaries = []
         for node in context_nodes[:5]:  # Limit to most relevant
             node_type = node.get('node_type', 'concept')
             label = node.get('label', 'Unknown')
             properties = node.get('properties', {})
-            
+
             if node_type == 'concept':
                 domain = properties.get('domain', 'unknown domain')
                 summary = f"- Previously explored '{label}' in {domain}"
@@ -226,198 +250,277 @@ Follow these instructions for the next turn:
                 summary = f"- Used metaphor '{label}' to understand {concept}"
             else:
                 summary = f"- {node_type.title()}: {label}"
-            
+
             summaries.append(summary)
-        
+
         return "\n".join(summaries)
-    
+
     async def update_persona(self, adjustments: Optional[Dict[str, Any]]) -> None:
         """Update persona using intelligent LLM-based synthesis with comprehensive validation."""
         if adjustments is None or not adjustments:
             logger.debug("No persona adjustments provided")
             return
-        
+
+        # Simple fast-path: if single 'instruction' string, append to instructions list
+        if isinstance(adjustments, dict) and isinstance(adjustments.get("instruction"), str):
+            instr = adjustments.get("instruction").strip()
+            if instr:
+                existing = self.current_persona_adjustments.get("instructions")
+                if not isinstance(existing, list):
+                    existing = []
+                existing.append(instr)
+                self.current_persona_adjustments["instructions"] = existing
+                return
+
         # Validate adjustments before processing
         validated_adjustments = self._validate_persona_adjustments(adjustments)
         if not validated_adjustments:
-            logger.warning("All persona adjustments failed validation, skipping update")
+            logger.warning(
+                "All persona adjustments failed validation, skipping update")
             return
-        
-        logger.info(f"Synthesizing validated persona adjustments: {list(validated_adjustments.keys())}")
-        
+
+        logger.info(
+            f"Synthesizing validated persona adjustments: {list(validated_adjustments.keys())}")
+
         # Create backup of current state for recovery
         backup_adjustments = self.current_persona_adjustments.copy()
-        
+
         try:
-            # Use LLM to intelligently synthesize adjustments with current persona
-            synthesized_adjustments = await self._synthesize_persona_adjustments(validated_adjustments)
-            
+            # Use LLM (Responses-first) to intelligently synthesize adjustments with current persona
+            current_json = json.dumps(
+                self.current_persona_adjustments or {}, indent=2)
+            new_json = json.dumps(validated_adjustments, indent=2)
+
+            # Get current context and recent conversation in short form
+            session_context = ""
+            if hasattr(self, 'session_context') and self.session_context:
+                session_context = f"Topic: {self.session_context.get('topic', 'Unknown')}"
+            recent_conversation = ""
+            if self.conversation_history:
+                recent_exchanges = self.conversation_history[-6:]
+                recent_conversation = "\n".join([
+                    f"{m['role']}: {m['content'][:200]}..." if len(m['content']) > 200 else f"{m['role']}: {m['content']}" for m in recent_exchanges
+                ])
+
+            prompt = CA_PERSONA_SYNTHESIS.format(
+                current_adjustments=current_json,
+                new_adjustments=new_json,
+                session_context=session_context,
+                recent_conversation=recent_conversation,
+            )
+
+            persona_schema = {
+                "type": "object",
+                "properties": {
+                    "metaphor_style": {"type": ["string", "array", "null"]},
+                    "question_depth": {"type": ["string", "null"]},
+                    "topic_focus": {"type": ["string", "null"]},
+                    "pace": {"type": ["string", "null"]},
+                    "engagement_style": {"type": ["string", "null"]},
+                    "instructions": {"type": ["array", "null"]}
+                }
+            }
+
+            content = await self.shared_llm.json_response(
+                prompt, schema=persona_schema, temperature=0.4, max_tokens=400
+            )
+
+            synthesized_adjustments, parse_err = safe_load_json(content)
+            if parse_err:
+                logger.warning(
+                    f"Persona synthesis parse issue, using direct merge: {parse_err}")
+                synthesized_adjustments = validated_adjustments
+
             # Validate synthesized adjustments
-            final_adjustments = self._validate_persona_adjustments(synthesized_adjustments)
+            final_adjustments = self._validate_persona_adjustments(
+                synthesized_adjustments)
             if not final_adjustments:
-                logger.warning("Synthesized adjustments failed validation, keeping current persona")
+                logger.warning(
+                    "Synthesized adjustments failed validation, keeping current persona")
                 return
-            
+
             # Track previous state for logging changes
             previous_adjustments = self.current_persona_adjustments.copy()
-            
+
             # Apply synthesized adjustments
             self.current_persona_adjustments.update(final_adjustments)
-            
+
             # Validate final persona state
             if not self._validate_persona_state():
-                logger.error("Final persona state is invalid, restoring backup")
+                logger.error(
+                    "Final persona state is invalid, restoring backup")
                 self.current_persona_adjustments = backup_adjustments
                 return
-            
+
             # Log specific changes made
             for key, value in final_adjustments.items():
                 if key in previous_adjustments:
                     if previous_adjustments[key] != value:
-                        logger.info(f"Synthesized persona adjustment '{key}': '{previous_adjustments[key]}' -> '{value}'")
+                        logger.info(
+                            f"Synthesized persona adjustment '{key}': '{previous_adjustments[key]}' -> '{value}'")
                     else:
-                        logger.debug(f"Persona adjustment '{key}' unchanged: '{value}'")
+                        logger.debug(
+                            f"Persona adjustment '{key}' unchanged: '{value}'")
                 else:
-                    logger.info(f"Added synthesized persona adjustment '{key}': '{value}'")
-            
-            logger.info(f"CA now has {len(self.current_persona_adjustments)} active persona adjustments")
-            logger.debug(f"Synthesized persona adjustments: {json.dumps(self.current_persona_adjustments, indent=2)}")
-            
+                    logger.info(
+                        f"Added synthesized persona adjustment '{key}': '{value}'")
+
+            logger.info(
+                f"CA now has {len(self.current_persona_adjustments)} active persona adjustments")
+            logger.debug(
+                f"Synthesized persona adjustments: {json.dumps(self.current_persona_adjustments, indent=2)}")
+
         except Exception as e:
             logger.error(f"Error during persona update: {e}")
             logger.info("Restoring persona backup due to error")
             self.current_persona_adjustments = backup_adjustments
-    
+
     def _validate_persona_adjustments(self, adjustments: Dict[str, Any]) -> Dict[str, Any]:
         """Validate persona adjustments to prevent corruption."""
         if not isinstance(adjustments, dict):
-            logger.warning(f"Invalid adjustments type: {type(adjustments)}, expected dict")
+            logger.warning(
+                f"Invalid adjustments type: {type(adjustments)}, expected dict")
             return {}
-        
+
         validated = {}
         valid_keys = {
             'metaphor_style', 'question_depth', 'topic_focus', 'pace', 'engagement_style',
             'instructions', 'tone', 'approach', 'guidance', 'behavior', 'style',
             'metaphor_diversity', 'curiosity_level', 'exploration_depth'
         }
-        
+
         for key, value in adjustments.items():
             try:
                 # Validate key format
                 if not isinstance(key, str):
-                    logger.warning(f"Invalid adjustment key type: {type(key)}, skipping")
+                    logger.warning(
+                        f"Invalid adjustment key type: {type(key)}, skipping")
                     continue
-                
+
                 if len(key) > 100:
-                    logger.warning(f"Adjustment key too long: {len(key)} chars, skipping")
+                    logger.warning(
+                        f"Adjustment key too long: {len(key)} chars, skipping")
                     continue
-                
+
                 # Validate value
                 if value is None:
                     logger.debug(f"Skipping None value for key '{key}'")
                     continue
-                
+
                 if isinstance(value, str):
                     if len(value) > 1000:
-                        logger.warning(f"Adjustment value too long for '{key}': {len(value)} chars, truncating")
+                        logger.warning(
+                            f"Adjustment value too long for '{key}': {len(value)} chars, truncating")
                         value = value[:1000] + "..."
-                    
+
                     # Check for potentially harmful content
                     if any(harmful in value.lower() for harmful in ['ignore', 'forget', 'override', 'disable']):
-                        logger.warning(f"Potentially harmful adjustment for '{key}': {value[:50]}..., skipping")
+                        logger.warning(
+                            f"Potentially harmful adjustment for '{key}': {value[:50]}..., skipping")
                         continue
-                
+
                 elif isinstance(value, list):
                     if len(value) > 20:
-                        logger.warning(f"Adjustment list too long for '{key}': {len(value)} items, truncating")
+                        logger.warning(
+                            f"Adjustment list too long for '{key}': {len(value)} items, truncating")
                         value = value[:20]
-                    
+
                     # Validate list items
                     validated_list = []
                     for item in value:
                         if isinstance(item, str) and len(item) <= 200:
                             validated_list.append(item)
                         else:
-                            logger.debug(f"Skipping invalid list item in '{key}': {type(item)}")
+                            logger.debug(
+                                f"Skipping invalid list item in '{key}': {type(item)}")
                     value = validated_list
-                
+
                 elif isinstance(value, (int, float, bool)):
                     # Numeric and boolean values are generally safe
                     pass
-                
+
                 else:
-                    logger.warning(f"Unsupported adjustment value type for '{key}': {type(value)}, skipping")
+                    logger.warning(
+                        f"Unsupported adjustment value type for '{key}': {type(value)}, skipping")
                     continue
-                
+
                 # Add to validated adjustments
                 validated[key] = value
-                
+
             except Exception as e:
                 logger.error(f"Error validating adjustment '{key}': {e}")
                 continue
-        
-        logger.info(f"Validated {len(validated)}/{len(adjustments)} persona adjustments")
+
+        logger.info(
+            f"Validated {len(validated)}/{len(adjustments)} persona adjustments")
         return validated
-    
+
     def _validate_persona_state(self) -> bool:
         """Validate the overall persona state for consistency."""
         try:
             # Check total size
             total_adjustments = len(self.current_persona_adjustments)
             if total_adjustments > 50:
-                logger.warning(f"Too many persona adjustments: {total_adjustments}")
+                logger.warning(
+                    f"Too many persona adjustments: {total_adjustments}")
                 return False
-            
+
             # Check for conflicting adjustments
             if 'metaphor_style' in self.current_persona_adjustments:
                 metaphor_style = self.current_persona_adjustments['metaphor_style']
                 if isinstance(metaphor_style, str):
                     if 'avoid metaphors' in metaphor_style.lower() and 'use metaphors' in metaphor_style.lower():
-                        logger.warning("Conflicting metaphor style instructions detected")
+                        logger.warning(
+                            "Conflicting metaphor style instructions detected")
                         return False
-            
+
             # Check for contradictory pace instructions
             if 'pace' in self.current_persona_adjustments:
                 pace = self.current_persona_adjustments['pace']
                 if isinstance(pace, str):
                     if 'slow down' in pace.lower() and 'speed up' in pace.lower():
-                        logger.warning("Conflicting pace instructions detected")
+                        logger.warning(
+                            "Conflicting pace instructions detected")
                         return False
-            
+
             # Validate instructions format
             if 'instructions' in self.current_persona_adjustments:
                 instructions = self.current_persona_adjustments['instructions']
                 if not isinstance(instructions, list):
-                    logger.warning(f"Instructions should be a list, got {type(instructions)}")
+                    logger.warning(
+                        f"Instructions should be a list, got {type(instructions)}")
                     return False
-                
+
                 if len(instructions) > 10:
-                    logger.warning(f"Too many instructions: {len(instructions)}")
+                    logger.warning(
+                        f"Too many instructions: {len(instructions)}")
                     return False
-            
+
             return True
-            
+
         except Exception as e:
             logger.error(f"Error validating persona state: {e}")
             return False
-    
+
     async def _synthesize_persona_adjustments(self, new_adjustments: Dict[str, Any]) -> Dict[str, Any]:
         """Use LLM to intelligently synthesize persona adjustments."""
-        
+
         # Get current session context
         session_context = ""
         if hasattr(self, 'session_context') and self.session_context:
             session_context = f"Topic: {self.session_context.get('topic', 'Unknown')}"
-        
+
         # Get recent conversation for context
         recent_conversation = ""
         if self.conversation_history:
-            recent_exchanges = self.conversation_history[-6:]  # Last 3 exchanges
+            # Last 3 exchanges
+            recent_exchanges = self.conversation_history[-6:]
             recent_conversation = "\n".join([
-                f"{msg['role']}: {msg['content'][:200]}..." if len(msg['content']) > 200 else f"{msg['role']}: {msg['content']}"
+                f"{msg['role']}: {msg['content'][:200]}..." if len(
+                    msg['content']) > 200 else f"{msg['role']}: {msg['content']}"
                 for msg in recent_exchanges
             ])
-        
+
         prompt = f"""
 You are helping synthesize persona adjustments for a Socratic learning guide. The goal is to intelligently integrate new behavioral adjustments with existing ones, resolving conflicts and creating coherent guidance.
 
@@ -469,31 +572,33 @@ Example format:
                 temperature=0.4,  # Balanced creativity and consistency
                 max_tokens=300
             )
-            
+
             # Parse JSON response
             synthesized_text = response.choices[0].message.content.strip()
-            
+
             # Extract JSON from response
             import re
             json_match = re.search(r'\{.*\}', synthesized_text, re.DOTALL)
             if json_match:
                 synthesized_adjustments = json.loads(json_match.group())
-                logger.info("Successfully synthesized persona adjustments using LLM")
+                logger.info(
+                    "Successfully synthesized persona adjustments using LLM")
                 return synthesized_adjustments
             else:
-                logger.warning("Could not parse JSON from LLM response, using direct merge")
+                logger.warning(
+                    "Could not parse JSON from LLM response, using direct merge")
                 return new_adjustments
-                
+
         except Exception as e:
             logger.error(f"Failed to synthesize persona adjustments: {e}")
             # Fallback to simple merge
             return new_adjustments
-    
+
     async def get_canonical_check(self, concept: str) -> Dict[str, Any]:
         """Perform canonical knowledge check for a concept."""
         # This would be called by the CA when it needs to verify understanding
         # against canonical sources
-        
+
         system_prompt = f"""
 You are checking the canonical/academic understanding of: {concept}
 
@@ -505,20 +610,20 @@ Provide:
 
 Be concise and factual.
 """
-        
+
         try:
             response = await self._make_completion_request(
                 [{"role": "system", "content": system_prompt}],
                 temperature=0.3,  # Lower temperature for factual content
                 max_tokens=500
             )
-            
+
             return {
                 "concept": concept,
                 "canonical_info": response.choices[0].message.content,
                 "confidence": "high"  # Could be computed based on response
             }
-            
+
         except Exception as e:
             logger.error(f"Failed canonical check for {concept}: {e}")
             return {
@@ -527,11 +632,12 @@ Be concise and factual.
                 "confidence": "low",
                 "error": str(e)
             }
-    
+
     def get_session_stats(self) -> Dict[str, Any]:
         """Get statistics about the current session."""
         return {
-            "total_exchanges": len(self.conversation_history) // 2,  # Pairs of user/assistant
+            # Pairs of user/assistant
+            "total_exchanges": len(self.conversation_history) // 2,
             "topic": self.session_context.get('topic'),
             "persona_adjustments": len(self.current_persona_adjustments),
             "has_context": bool(self.session_context.get('relevant_context'))

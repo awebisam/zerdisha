@@ -8,6 +8,11 @@ from datetime import datetime
 from openai import AsyncAzureOpenAI
 
 from ..models.config import LLMConfig
+from ..core.prompts import (
+    MA_SESSION_ANALYSIS,
+    MA_SEED_GENERATION,
+    MA_FINAL_SESSION_ANALYSIS,
+)
 from ..models.graph import Session, ConceptExtraction, SeedDiscovery
 
 logger = logging.getLogger(__name__)
@@ -34,231 +39,95 @@ class MetacognitiveAgent:
         logger.info("Metacognitive Agent initialized with LLM-first approach")
 
     def _load_analysis_templates(self) -> Dict[str, str]:
-        """Load templates for metacognitive analysis."""
+        """Load templates for metacognitive analysis from centralized prompt library."""
         return {
-            "session_analysis": '''
-Analyze this learning session for metacognitive patterns:
-
-SESSION INFO:
-- Topic: {topic}
-- Duration: {duration_minutes} minutes
-- Total exchanges: {total_exchanges}
-- Concepts extracted: {concepts_count}
-
-RECENT CONVERSATION:
-{recent_messages}
-
-CONCEPT EXTRACTIONS:
-{extractions}
-
-METAPHOR USAGE TRACKING:
-{metaphor_usage}
-
-Analyze for:
-1. Metaphor lock-in (same metaphor used repeatedly - look for patterns like "like a", "similar to", "imagine", "think of X as Y")
-2. Topic drift (wandering from main topic)
-3. Stagnation (repeating same level without progress)
-4. Readiness for canonical knowledge
-5. Curiosity patterns and engagement level
-
-Pay special attention to metaphor patterns:
-- Identify specific metaphors being used (e.g., "water flow", "building blocks", "journey", "dance")
-- Count repetitions of the same metaphorical framework
-- Assess if metaphor diversity is decreasing over time
-- Look for signs that current metaphors are limiting rather than expanding understanding
-
-Return JSON:
-{{
-    "flags": [
-        {{
-            "type": "metaphor_lock|topic_drift|stagnation|ready_for_canonical|low_engagement",
-            "severity": "low|medium|high",
-            "evidence": "what indicates this",
-            "recommendation": "what to do about it"
-        }}
-    ],
-    "insights": [
-        {{
-            "observation": "what you noticed",
-            "impact": "how it affects learning",
-            "suggestion": "how to optimize"
-        }}
-    ],
-    "metaphors_detected": [
-        {{
-            "metaphor": "specific metaphor name or description",
-            "frequency": "how often used",
-            "effectiveness": "high|medium|low",
-            "limiting_factor": "how it might be constraining thinking"
-        }}
-    ],
-    "persona_adjustments": {{
-        "metaphor_style": "adjust how metaphors are used - encourage diversity, introduce new domains",
-        "question_depth": "adjust question complexity",
-        "topic_focus": "guide topic boundaries",
-        "pace": "adjust exploration pace",
-        "metaphor_prompting": "specific instructions to encourage new metaphorical thinking"
-    }},
-    "suggested_commands": ["command1", "command2"]
-}}
-''',
-            "seed_generation": '''
-Based on this learning session, generate exploration seeds for future discovery:
-
-SESSION SUMMARY:
-- Topic: {topic} 
-- Concepts explored: {concepts}
-- Domains touched: {domains}
-- Current understanding depth: {depth_level}
-
-KNOWLEDGE GAPS IDENTIFIED:
-{gaps}
-
-Generate seeds for:
-1. Unexplored connections between current concepts
-2. Adjacent domains that could provide insights
-3. Deeper layers of current topics
-4. Cross-pollination opportunities
-
-Return JSON:
-{{
-    "seeds": [
-        {{
-            "concept": "seed concept name",
-            "discovery_type": "connection_gap|adjacent_domain|deeper_layer|cross_pollination",
-            "rationale": "why this seed is valuable",
-            "related_concepts": ["concept1", "concept2"],
-            "suggested_questions": ["question1", "question2"],
-            "priority": 0.8
-        }}
-    ]
-}}
-''',
-            "final_session_analysis": '''
-Provide final analysis for this completed learning session:
-
-SESSION SUMMARY:
-{session_summary}
-
-FULL CONVERSATION TRAJECTORY:
-{full_conversation}
-
-CONCEPTS AND CONNECTIONS CREATED:
-{graph_changes}
-
-Assess:
-1. Overall learning trajectory quality
-2. Curiosity fulfillment vs. remaining open threads
-3. Metaphor effectiveness across the session
-4. Knowledge graph coherence and growth
-5. Recommendations for next session
-
-Return JSON:
-{{
-    "trajectory_quality": {{
-        "score": 0.8,
-        "strengths": ["strength1", "strength2"],
-        "weaknesses": ["weakness1", "weakness2"]
-    }},
-    "curiosity_fulfillment": {{
-        "fulfilled_aspects": ["aspect1", "aspect2"],
-        "open_threads": ["thread1", "thread2"],
-        "closure_quality": "high|medium|low"
-    }},
-    "metaphor_effectiveness": {{
-        "successful_metaphors": [{{"metaphor": "name", "effectiveness": 0.9}}],
-        "failed_metaphors": [{{"metaphor": "name", "issue": "reason"}}],
-        "metaphor_diversity_score": 0.7
-    }},
-    "graph_coherence": {{
-        "new_nodes_quality": "high|medium|low",
-        "connection_strength": 0.8,
-        "domain_integration": "good|fair|poor"
-    }},
-    "recommendations": {{
-        "next_session_focus": "what to explore next",
-        "learning_mode_adjustments": "how to adjust approach",
-        "knowledge_gaps": ["gap1", "gap2"]
-    }}
-}}
-'''
+            "session_analysis": MA_SESSION_ANALYSIS,
+            "seed_generation": MA_SEED_GENERATION,
+            "final_session_analysis": MA_FINAL_SESSION_ANALYSIS,
         }
-    
+
     async def analyze_session(
-        self, 
-        session: Session, 
+        self,
+        session: Session,
         extractions: List[ConceptExtraction],
         ca_reasoning: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Analyze session for metacognitive patterns with enhanced LLM intelligence."""
-        
+
         # Enhanced metaphor tracking with pattern analysis
         metaphor_analysis = await self._analyze_metaphor_patterns(session.messages, extractions)
-        
+
         # Build comprehensive analysis context
         context = {
             "topic": session.topic,
             "duration_minutes": (datetime.utcnow() - session.start_time).total_seconds() / 60,
             "total_exchanges": len(session.messages),
             "concepts_count": len(extractions),
-            "recent_messages": self._format_recent_messages(session.messages[-6:]),  # Last 3 exchanges
+            # Last 3 exchanges (max 6 items: 3 user/assistant pairs)
+            "recent_messages": self._format_recent_messages(session.messages[-6:]),
             "extractions": self._format_extractions(extractions),
             "metaphor_usage": self._track_metaphor_usage(session.messages, extractions),
-            "metaphor_analysis": metaphor_analysis
+            "metaphor_analysis": metaphor_analysis,
         }
-        
+
         # Use enhanced analysis template
         templates = self._load_analysis_templates()
         analysis_template = templates["session_analysis"]
-        prompt = analysis_template.format(**context)
-        
+        prompt = self._format_template(analysis_template, context)
+
         try:
             response = await self.client.chat.completions.create(
                 model=self._get_deployment_name(),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.4,  # Balanced analysis
-                max_tokens=700  # Increased for richer analysis
+                max_tokens=700,  # Increased for richer analysis
             )
-            
-            # Parse JSON response
+
             analysis_text = response.choices[0].message.content.strip()
-            
+
             # Extract JSON from response
             import re
-            json_match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
-            if json_match:
-                analysis = json.loads(json_match.group())
-                
-                # Enhance analysis with additional intelligent insights
-                analysis = await self._enhance_analysis_insights(analysis, context)
-                
-                # Store flags for session tracking
-                self.session_flags[session.id] = analysis.get("flags", [])
-                
-                logger.info(f"Enhanced MA analysis complete: {len(analysis.get('flags', []))} flags, {len(analysis.get('insights', []))} insights")
-                return analysis
-            else:
+            json_match = re.search(r"\{.*\}", analysis_text, re.DOTALL)
+            if not json_match:
                 logger.warning("Could not parse JSON from MA analysis")
                 return {"error": "Could not parse JSON from MA analysis", "flags": [], "insights": [], "persona_adjustments": {}}
-                
+
+            analysis = json.loads(json_match.group())
+
+            # Validate expected top-level keys exist
+            expected_keys = {"flags", "insights", "persona_adjustments"}
+            if not any(k in analysis for k in expected_keys):
+                return {"error": "Invalid analysis structure", **analysis}
+
+            # Enhance analysis with additional intelligent insights
+            analysis = await self._enhance_analysis_insights(analysis, context)
+
+            # Store flags for session tracking
+            self.session_flags[session.id] = analysis.get("flags", [])
+
+            logger.info(
+                f"Enhanced MA analysis complete: {len(analysis.get('flags', []))} flags, {len(analysis.get('insights', []))} insights"
+            )
+            return analysis
+
         except Exception as e:
             logger.error(f"MA analysis failed: {e}")
             return {"error": f"MA analysis failed: {e}", "flags": [], "insights": [], "persona_adjustments": {}}
-    
+
     async def _analyze_metaphor_patterns(self, messages: List[Dict], extractions: List[ConceptExtraction]) -> Dict[str, Any]:
         """Analyze metaphor patterns with LLM intelligence."""
-        
+
         # Extract recent conversation text
         conversation_text = "\n".join([
             f"User: {msg.get('user', '')}\nAssistant: {msg.get('assistant', '')}"
             for msg in messages[-8:]  # Last 4 exchanges
         ])
-        
+
         # Extract metaphors from extractions
         all_metaphors = []
         for extraction in extractions:
             all_metaphors.extend(extraction.metaphors)
-        
+
         prompt = f"""
 Analyze the metaphor usage patterns in this learning conversation:
 
@@ -295,23 +164,23 @@ Return JSON:
                 temperature=0.3,
                 max_tokens=300
             )
-            
+
             analysis_text = response.choices[0].message.content.strip()
             import re
             json_match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
-            
+
             if json_match:
                 return json.loads(json_match.group())
             else:
                 return {"diversity_score": 0.5, "lock_in_detected": False}
-                
+
         except Exception as e:
             logger.error(f"Metaphor pattern analysis failed: {e}")
             return {"diversity_score": 0.5, "lock_in_detected": False}
-    
+
     async def _enhance_analysis_insights(self, analysis: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
         """Enhance analysis with additional intelligent insights."""
-        
+
         # Add learning trajectory assessment
         if "learning_trajectory" not in analysis:
             trajectory_score = self._assess_learning_trajectory(context)
@@ -320,189 +189,199 @@ Return JSON:
                 "depth_level": "surface" if trajectory_score < 0.3 else "developing" if trajectory_score < 0.7 else "deep",
                 "momentum": "building" if trajectory_score > 0.6 else "steady" if trajectory_score > 0.3 else "declining"
             }
-        
+
         # Add curiosity health metrics
         if "curiosity_health" not in analysis:
-            engagement_level = "high" if context.get("total_exchanges", 0) > 5 else "medium" if context.get("total_exchanges", 0) > 2 else "low"
+            engagement_level = "high" if context.get(
+                "total_exchanges", 0) > 5 else "medium" if context.get("total_exchanges", 0) > 2 else "low"
             analysis["curiosity_health"] = {
                 "engagement_level": engagement_level,
                 "question_quality": "stable",  # Could be enhanced with more analysis
                 "exploration_breadth": "focused" if context.get("concepts_count", 0) < 3 else "expanding"
             }
-        
+
         return analysis
-    
+
     def _assess_learning_trajectory(self, context: Dict[str, Any]) -> float:
         """Assess learning trajectory quality."""
         # Simple heuristic based on conversation length and concept extraction
         exchanges = context.get("total_exchanges", 0)
         concepts = context.get("concepts_count", 0)
-        
+
         if exchanges == 0:
             return 0.0
-        
+
         # Basic trajectory score: concepts per exchange with diminishing returns
         base_score = min(concepts / max(exchanges, 1), 1.0)
-        
+
         # Adjust for session duration (longer sessions with sustained engagement are better)
         duration = context.get("duration_minutes", 0)
-        duration_factor = min(duration / 30.0, 1.2)  # Optimal around 30 minutes
-        
+        # Optimal around 30 minutes
+        duration_factor = min(duration / 30.0, 1.2)
+
         return min(base_score * duration_factor, 1.0)
-    
+
     def _format_recent_messages(self, messages: List[Dict]) -> str:
         """Format recent messages for analysis."""
         if not messages:
             return "No recent messages"
-        
+
         formatted = []
         for msg in messages:
             user_msg = msg.get('user', '')
             assistant_msg = msg.get('assistant', '')
             formatted.append(f"User: {user_msg}\nAssistant: {assistant_msg}")
-        
+
         return "\n---\n".join(formatted)
-    
+
     def _format_extractions(self, extractions: List[ConceptExtraction]) -> str:
         """Format concept extractions for analysis."""
         if not extractions:
             return "No concept extractions"
-        
+
         formatted = []
         for extraction in extractions:
-            metaphors_str = ", ".join(extraction.metaphors) if extraction.metaphors else "None"
-            formatted.append(f"Concept: {extraction.concept} | Domain: {extraction.domain} | Metaphors: {metaphors_str}")
-        
+            metaphors_str = ", ".join(
+                extraction.metaphors) if extraction.metaphors else "None"
+            formatted.append(
+                f"Concept: {extraction.concept} | Domain: {extraction.domain} | Metaphors: {metaphors_str}")
+
         return "\n".join(formatted)
-    
+
     def _track_metaphor_usage(self, messages: List[Dict], extractions: List[ConceptExtraction]) -> str:
         """Track metaphor usage patterns."""
         # Extract all metaphors from extractions
         all_metaphors = []
         for extraction in extractions:
             all_metaphors.extend(extraction.metaphors)
-        
+
         if not all_metaphors:
             return "No metaphors detected"
-        
+
         # Count metaphor frequency
         metaphor_counts = {}
         for metaphor in all_metaphors:
             metaphor_counts[metaphor] = metaphor_counts.get(metaphor, 0) + 1
-        
+
         # Format for analysis
         usage_summary = []
         for metaphor, count in sorted(metaphor_counts.items(), key=lambda x: x[1], reverse=True):
             usage_summary.append(f"{metaphor}: {count} times")
-        
+
         return "\n".join(usage_summary[:10])  # Top 10 most used
-    
+
     async def generate_seed(self, session: Session) -> SeedDiscovery:
         """Generate exploration seed using LLM intelligence."""
-        
+
         # Build context for seed generation
-        concepts = [msg.get('user', '') + ' ' + msg.get('assistant', '') for msg in session.messages[-4:]]
+        concepts = [msg.get("user", "") + " " + msg.get("assistant", "")
+                    for msg in session.messages[-4:]]
         concepts_text = " ".join(concepts)
-        
+
         # Identify domains from session
         domains = ["general"]  # Default domain
-        
+
         templates = self._load_analysis_templates()
         seed_template = templates["seed_generation"]
-        
+
         context = {
             "topic": session.topic,
             "concepts": concepts_text[:500],  # Limit length
             "domains": ", ".join(domains),
             "depth_level": "developing",  # Could be enhanced with actual assessment
-            "gaps": "To be identified through analysis"
+            "gaps": "To be identified through analysis",
         }
-        
-        prompt = seed_template.format(**context)
-        
+
+        prompt = self._format_template(seed_template, context)
+
         try:
             response = await self.client.chat.completions.create(
                 model=self._get_deployment_name(),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.6,  # Creative but focused
-                max_tokens=400
+                max_tokens=400,
             )
-            
+
             # Parse JSON response
             seed_text = response.choices[0].message.content.strip()
-            
+
             import re
-            json_match = re.search(r'\{.*\}', seed_text, re.DOTALL)
+            json_match = re.search(r"\{.*\}", seed_text, re.DOTALL)
             if json_match:
                 seed_data = json.loads(json_match.group())
                 seeds = seed_data.get("seeds", [])
-                
+
                 if seeds:
                     # Return the highest priority seed
-                    best_seed = max(seeds, key=lambda x: x.get("priority", 0.5))
+                    best_seed = max(
+                        seeds, key=lambda x: x.get("priority", 0.5))
                     return SeedDiscovery(
                         concept=best_seed.get("concept", "New exploration"),
-                        rationale=best_seed.get("rationale", "Continue exploring"),
-                        suggested_questions=best_seed.get("suggested_questions", [])
+                        rationale=best_seed.get(
+                            "rationale", "Continue exploring"),
+                        suggested_questions=best_seed.get(
+                            "suggested_questions", []),
                     )
-            
+
             # Fallback seed
             return SeedDiscovery(
                 concept=f"Deeper exploration of {session.topic}",
                 rationale="Continue building understanding",
-                suggested_questions=[f"What aspects of {session.topic} intrigue you most?"]
+                suggested_questions=[
+                    f"What aspects of {session.topic} intrigue you most?"],
             )
-            
+
         except Exception as e:
             logger.error(f"Seed generation failed: {e}")
             return SeedDiscovery(
                 concept=f"Continue exploring {session.topic}",
                 rationale="Keep the exploration momentum going",
-                suggested_questions=[f"What new angle on {session.topic} would you like to explore?"]
+                suggested_questions=[
+                    f"What new angle on {session.topic} would you like to explore?"],
             )
-    
+
     async def finalize_session(self, session: Session) -> Dict[str, Any]:
         """Provide final session analysis using LLM intelligence."""
-        
+
         # Build comprehensive session summary
         session_summary = {
             "topic": session.topic,
             "duration": (session.end_time - session.start_time).total_seconds() / 60 if session.end_time else 0,
             "total_exchanges": len(session.messages),
             "concepts_created": len(session.nodes_created),
-            "connections_made": len(session.edges_created)
+            "connections_made": len(session.edges_created),
         }
-        
+
         # Format conversation for analysis
         full_conversation = self._format_recent_messages(session.messages)
-        
+
         # Graph changes summary
         graph_changes = f"Created {len(session.nodes_created)} concept nodes and {len(session.edges_created)} connections"
-        
+
         templates = self._load_analysis_templates()
         final_template = templates["final_session_analysis"]
-        
+
         context = {
             "session_summary": json.dumps(session_summary, indent=2),
-            "full_conversation": full_conversation[:1000],  # Limit for token management
-            "graph_changes": graph_changes
+            # Limit for token management
+            "full_conversation": full_conversation[:1000],
+            "graph_changes": graph_changes,
         }
-        
-        prompt = final_template.format(**context)
-        
+
+        prompt = self._format_template(final_template, context)
+
         try:
             response = await self.client.chat.completions.create(
                 model=self._get_deployment_name(),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.4,
-                max_tokens=500
+                max_tokens=500,
             )
-            
-            # Parse JSON response
+
             analysis_text = response.choices[0].message.content.strip()
-            
+
             import re
-            json_match = re.search(r'\{.*\}', analysis_text, re.DOTALL)
+            json_match = re.search(r"\{.*\}", analysis_text, re.DOTALL)
             if json_match:
                 final_analysis = json.loads(json_match.group())
                 logger.info("Generated comprehensive final session analysis")
@@ -510,11 +389,11 @@ Return JSON:
             else:
                 logger.warning("Could not parse final analysis JSON")
                 return self._fallback_final_analysis(session_summary)
-                
+
         except Exception as e:
             logger.error(f"Final session analysis failed: {e}")
             return self._fallback_final_analysis(session_summary)
-    
+
     def _fallback_final_analysis(self, session_summary: Dict[str, Any]) -> Dict[str, Any]:
         """Fallback final analysis if LLM fails."""
         return {
@@ -534,3 +413,21 @@ Return JSON:
                 "knowledge_gaps": ["Deeper theoretical understanding", "Practical applications"]
             }
         }
+
+    def _format_template(self, template: str, mapping: Dict[str, Any]) -> str:
+        """Safely format a template that contains JSON braces by escaping all braces
+        and then restoring placeholders for provided mapping keys.
+
+        Example: turns all '{' -> '{{' and '}' -> '}}', then for each key 'topic'
+        restores '{{topic}}' -> '{topic}' so .format works only on placeholders.
+        """
+        # Escape all braces first
+        escaped = template.replace('{', '{{').replace('}', '}}')
+        # Restore placeholders for keys in mapping
+        for key in mapping.keys():
+            escaped = escaped.replace('{{' + key + '}}', '{' + key + '}')
+        try:
+            return escaped.format(**mapping)
+        except Exception:
+            # As a last resort, return the unformatted template to avoid crashes
+            return template
