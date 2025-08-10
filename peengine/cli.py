@@ -16,6 +16,7 @@ from rich.markdown import Markdown
 
 from .models.config import Settings
 from .core.orchestrator import ExplorationEngine
+from .tools.import_knowledge_graphs import KnowledgeGraphImporter
 
 # Initialize Typer app and Rich console
 app = typer.Typer(
@@ -335,6 +336,54 @@ def init():
         return
     
     console.print("\n[green]✓[/green] Ready to explore! Use 'peengine start <topic>' to begin.")
+
+
+@app.command(name="import-graphs")
+def import_knowledge_graphs():
+    """Import existing knowledge graphs from JSON files into Neo4j."""
+    async def _import_graphs():
+        console.print("🧠 Importing existing knowledge graphs...")
+        
+        try:
+            settings = Settings()
+            setup_logging(settings.log_level)
+            
+            importer = KnowledgeGraphImporter(settings)
+            results = await importer.import_all_graphs()
+            
+            # Display results
+            console.print(f"[green]✅ Import complete![/green]")
+            
+            # Create results table
+            table = Table(title="Import Results")
+            table.add_column("Metric", style="cyan")
+            table.add_column("Count", style="green")
+            
+            table.add_row("Domains imported", str(results['domains_imported']))
+            table.add_row("Connections imported", str(results['connections_imported']))
+            table.add_row("Total nodes created", str(results['total_nodes']))
+            table.add_row("Total edges created", str(results['total_edges']))
+            
+            console.print(table)
+            
+            # Show errors if any
+            if results['errors']:
+                console.print(f"\n[yellow]⚠️  Errors encountered:[/yellow]")
+                for error in results['errors']:
+                    console.print(f"  • [red]{error}[/red]")
+            
+            if results['total_nodes'] > 0:
+                console.print(f"\n[green]✓[/green] Successfully imported {results['total_nodes']} concepts into your knowledge graph!")
+                console.print("Use 'peengine start <topic>' to explore with your imported knowledge.")
+            else:
+                console.print(f"\n[yellow]⚠[/yellow] No knowledge graphs found to import.")
+                console.print(f"Make sure you have JSON files in: {settings.knowledge_graphs_path}")
+                
+        except Exception as e:
+            console.print(f"[red]✗[/red] Import failed: {e}")
+            raise typer.Exit(1)
+    
+    asyncio.run(_import_graphs())
 
 
 def main():

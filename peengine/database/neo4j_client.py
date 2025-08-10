@@ -71,31 +71,25 @@ class Neo4jClient:
     
     def create_node(self, node: Node) -> bool:
         """Create a node in the graph."""
-        query = """
-        CREATE (n:Node {
-            id: $id,
-            label: $label,
-            node_type: $node_type,
-            properties: $properties,
-            u_vector: $u_vector,
-            c_vector: $c_vector,
-            created_at: $created_at,
-            updated_at: $updated_at
-        })
-        """
+        # Flatten properties into the main node structure
+        flattened_properties = {
+            "id": node.id,
+            "label": node.label,
+            "node_type": node.node_type.value,
+            "u_vector": node.u_vector.model_dump() if node.u_vector else None,
+            "c_vector": node.c_vector.model_dump() if node.c_vector else None,
+            "created_at": node.created_at.isoformat(),
+            "updated_at": node.updated_at.isoformat(),
+            **node.properties  # Flatten custom properties directly into node
+        }
+        
+        # Build dynamic query based on available properties
+        property_assignments = ", ".join([f"{key}: ${key}" for key in flattened_properties.keys()])
+        query = f"CREATE (n:Node {{ {property_assignments} }})"
         
         with self.session() as session:
             try:
-                result = session.run(query, {
-                    "id": node.id,
-                    "label": node.label,
-                    "node_type": node.node_type.value,
-                    "properties": node.properties,
-                    "u_vector": node.u_vector.model_dump() if node.u_vector else None,
-                    "c_vector": node.c_vector.model_dump() if node.c_vector else None,
-                    "created_at": node.created_at.isoformat(),
-                    "updated_at": node.updated_at.isoformat()
-                })
+                result = session.run(query, flattened_properties)
                 logger.info(f"Created node: {node.id}")
                 return True
             except Exception as e:
@@ -104,31 +98,29 @@ class Neo4jClient:
     
     def create_edge(self, edge: Edge) -> bool:
         """Create an edge between nodes."""
-        query = """
-        MATCH (source:Node {id: $source_id})
-        MATCH (target:Node {id: $target_id})
-        CREATE (source)-[r:RELATES {
-            id: $id,
-            edge_type: $edge_type,
-            properties: $properties,
-            weight: $weight,
-            confidence: $confidence,
-            created_at: $created_at
-        }]->(target)
+        # Flatten properties into the main edge structure
+        flattened_properties = {
+            "id": edge.id,
+            "edge_type": edge.edge_type.value,
+            "weight": edge.weight,
+            "confidence": edge.confidence,
+            "created_at": edge.created_at.isoformat(),
+            "source_id": edge.source_id,
+            "target_id": edge.target_id,
+            **edge.properties  # Flatten custom properties directly into edge
+        }
+        
+        # Build dynamic query for edge properties (excluding source/target IDs)
+        edge_property_assignments = ", ".join([f"{key}: ${key}" for key in flattened_properties.keys() if key not in ["source_id", "target_id"]])
+        query = f"""
+        MATCH (source:Node {{id: $source_id}})
+        MATCH (target:Node {{id: $target_id}})
+        CREATE (source)-[r:RELATES {{ {edge_property_assignments} }}]->(target)
         """
         
         with self.session() as session:
             try:
-                result = session.run(query, {
-                    "source_id": edge.source_id,
-                    "target_id": edge.target_id,
-                    "id": edge.id,
-                    "edge_type": edge.edge_type.value,
-                    "properties": edge.properties,
-                    "weight": edge.weight,
-                    "confidence": edge.confidence,
-                    "created_at": edge.created_at.isoformat()
-                })
+                result = session.run(query, flattened_properties)
                 logger.info(f"Created edge: {edge.id}")
                 return True
             except Exception as e:
@@ -166,8 +158,8 @@ class Neo4jClient:
             result = session.run(query, {"node_id": node_id, "max_depth": max_depth})
             return [dict(record["connected"]) for record in result]
     
-    def create_session(self, session: Session) -> bool:
-        """Create a session record."""
+    def create_session_summary(self, session: Session) -> bool:
+        """Create a session summary node in the knowledge graph (not full transcript)."""
         query = """
         CREATE (s:Session {
             id: $id,
@@ -175,11 +167,11 @@ class Neo4jClient:
             topic: $topic,
             start_time: $start_time,
             end_time: $end_time,
-            messages: $messages,
             nodes_created: $nodes_created,
             edges_created: $edges_created,
-            metrics: $metrics,
-            status: $status
+            status: $status,
+            concept_count: $concept_count,
+            exchange_count: $exchange_count
         })
         """
         
@@ -191,16 +183,16 @@ class Neo4jClient:
                     "topic": session.topic,
                     "start_time": session.start_time.isoformat(),
                     "end_time": session.end_time.isoformat() if session.end_time else None,
-                    "messages": session.messages,
-                    "nodes_created": session.nodes_created,
-                    "edges_created": session.edges_created,
-                    "metrics": session.metrics,
-                    "status": session.status
+                    "nodes_created": session.nodes_created,  # List of concept node IDs
+                    "edges_created": session.edges_created,  # List of relationship edge IDs
+                    "status": session.status,
+                    "concept_count": len(session.nodes_created),
+                    "exchange_count": len(session.messages)
                 })
-                logger.info(f"Created session: {session.id}")
+                logger.info(f"Created session summary in graph: {session.id}")
                 return True
             except Exception as e:
-                logger.error(f"Failed to create session {session.id}: {e}")
+                logger.error(f"Failed to create session summary {session.id}: {e}")
                 return False
     
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
@@ -238,8 +230,7 @@ class Neo4jClient:
         """Search nodes by text content in properties."""
         query = """
         MATCH (n:Node)
-        WHERE n.label CONTAINS $query_text 
-        OR ANY(key IN keys(n.properties) WHERE toString(n.properties[key]) CONTAINS $query_text)
+        WHERE toLower(n.label) CONTAINS toLower($query_text)
         RETURN n
         LIMIT $limit
         """

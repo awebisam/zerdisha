@@ -9,6 +9,7 @@ from pathlib import Path
 from ..models.graph import Session, Node, Edge, NodeType, EdgeType
 from ..models.config import Settings
 from ..database.neo4j_client import Neo4jClient
+from ..database.mongodb_client import MongoDBClient
 from ..agents.conversational import ConversationalAgent
 from ..agents.pattern_detector import PatternDetector
 from ..agents.metacognitive import MetacognitiveAgent
@@ -24,8 +25,9 @@ class ExplorationEngine:
     def __init__(self, settings: Settings):
         self.settings = settings
         
-        # Initialize database
-        self.db = Neo4jClient(settings.database_config)
+        # Initialize databases
+        self.graph_db = Neo4jClient(settings.database_config)
+        self.message_db = MongoDBClient(settings.mongodb_uri, settings.mongodb_database)
         
         # Initialize agents
         self.ca = ConversationalAgent(settings.llm_config, settings.persona_config)
@@ -34,16 +36,17 @@ class ExplorationEngine:
         
         # Initialize services
         self.embedding_service = EmbeddingService(settings.llm_config)
-        self.analytics = AnalyticsEngine(self.db, self.embedding_service)
+        self.analytics = AnalyticsEngine(self.graph_db, self.embedding_service)
         
         # Current session
         self.current_session: Optional[Session] = None
         
     async def initialize(self) -> None:
         """Initialize the engine and all components."""
-        # Connect to database
-        self.db.connect()
-        self.db.create_indexes()
+        # Connect to databases
+        self.graph_db.connect()
+        self.graph_db.create_indexes()
+        await self.message_db.connect()
         
         # Initialize agents
         await self.ca.initialize()
@@ -57,7 +60,8 @@ class ExplorationEngine:
         if self.current_session and self.current_session.status == "active":
             await self.end_session()
         
-        self.db.close()
+        self.graph_db.close()
+        await self.message_db.close()
         logger.info("Exploration Engine shutdown")
     
     async def start_session(self, topic: str, title: Optional[str] = None) -> Session:
@@ -76,10 +80,20 @@ class ExplorationEngine:
             status="active"
         )
         
-        # Create session in database
-        success = self.db.create_session(self.current_session)
-        if not success:
-            raise RuntimeError(f"Failed to create session in database")
+        # Create session in MongoDB (full data) and Neo4j (summary)
+        mongo_success = await self.message_db.create_session({
+            "id": self.current_session.id,
+            "title": self.current_session.title,
+            "topic": self.current_session.topic,
+            "start_time": self.current_session.start_time,
+            "status": self.current_session.status,
+            "messages": []
+        })
+        
+        neo4j_success = self.graph_db.create_session_summary(self.current_session)
+        
+        if not (mongo_success and neo4j_success):
+            raise RuntimeError(f"Failed to create session in databases")
         
         # Load relevant past nodes for context
         relevant_nodes = await self._load_relevant_context(topic)
@@ -98,7 +112,18 @@ class ExplorationEngine:
         # Get response from Conversational Agent
         ca_response = await self.ca.process_input(user_input)
         
-        # Add to session messages
+        # Store message exchange in MongoDB
+        await self.message_db.add_message_exchange(
+            self.current_session.id,
+            user_input,
+            ca_response["message"],
+            metadata={
+                "ca_reasoning": ca_response.get("reasoning", {}),
+                "timestamp": datetime.utcnow().isoformat()
+            }
+        )
+        
+        # Keep in-memory messages for current session processing
         message_pair = {
             "timestamp": datetime.utcnow().isoformat(),
             "user": user_input,
@@ -131,7 +156,7 @@ class ExplorationEngine:
                 }
             )
             
-            if self.db.create_node(concept_node):
+            if self.graph_db.create_node(concept_node):
                 new_nodes.append(concept_node.id)
                 self.current_session.nodes_created.append(concept_node.id)
             
@@ -147,7 +172,7 @@ class ExplorationEngine:
                     }
                 )
                 
-                if self.db.create_node(metaphor_node):
+                if self.graph_db.create_node(metaphor_node):
                     new_nodes.append(metaphor_node.id)
                     
                     # Create edge between concept and metaphor
@@ -159,7 +184,7 @@ class ExplorationEngine:
                         properties={"session_id": self.current_session.id}
                     )
                     
-                    if self.db.create_edge(edge):
+                    if self.graph_db.create_edge(edge):
                         new_edges.append(edge.id)
                         self.current_session.edges_created.append(edge.id)
         
@@ -174,19 +199,14 @@ class ExplorationEngine:
         if ma_analysis.get("persona_adjustments"):
             await self.ca.update_persona(ma_analysis["persona_adjustments"])
         
-        # Update session in database
-        session_updates = {
-            "messages": self.current_session.messages,
-            "nodes_created": self.current_session.nodes_created,
-            "edges_created": self.current_session.edges_created,
-            "metrics": {
-                **self.current_session.metrics,
-                "total_exchanges": len(self.current_session.messages),
-                "concepts_extracted": len(new_nodes),
-                "ma_flags": ma_analysis.get("flags", [])
-            }
+        # Update MongoDB with analysis data
+        analysis_data = {
+            "ma_insights": ma_analysis.get("insights", []),
+            "concepts_extracted": len(new_nodes),
+            "ma_flags": ma_analysis.get("flags", []),
+            "total_exchanges": len(self.current_session.messages)
         }
-        self.db.update_session(self.current_session.id, session_updates)
+        await self.message_db.update_session_analysis(self.current_session.id, analysis_data)
         
         return {
             "message": ca_response["message"],
@@ -222,13 +242,8 @@ class ExplorationEngine:
         # Final session analysis
         final_metrics = await self.ma.finalize_session(self.current_session)
         
-        # Update session in database
-        session_updates = {
-            "end_time": self.current_session.end_time.isoformat(),
-            "status": self.current_session.status,
-            "metrics": {**self.current_session.metrics, **final_metrics}
-        }
-        self.db.update_session(self.current_session.id, session_updates)
+        # End session in MongoDB with final analysis
+        await self.message_db.end_session(self.current_session.id, final_metrics)
         
         session_summary = {
             "session_id": self.current_session.id,
@@ -250,7 +265,7 @@ class ExplorationEngine:
     
     async def _load_relevant_context(self, topic: str) -> List[Dict[str, Any]]:
         """Load relevant nodes from past sessions for context."""
-        relevant_nodes = self.db.search_nodes_by_content(topic, limit=10)
+        relevant_nodes = self.graph_db.search_nodes_by_content(topic, limit=10)
         return relevant_nodes
     
     async def _show_session_map(self) -> Dict[str, Any]:
@@ -260,7 +275,7 @@ class ExplorationEngine:
         
         nodes = []
         for node_id in self.current_session.nodes_created:
-            node_data = self.db.get_node(node_id)
+            node_data = self.graph_db.get_node(node_id)
             if node_data:
                 nodes.append(node_data)
         
