@@ -132,11 +132,15 @@ class ExplorationEngine:
         self.current_session.messages.append(message_pair)
         
         # Extract patterns with Pattern Detector
-        extractions = await self.pd.extract_patterns(
-            user_input, 
-            ca_response["message"],
-            self.current_session.messages[-5:]  # Last 5 exchanges for context
-        )
+        try:
+            extractions = await self.pd.extract_patterns(
+                user_input, 
+                ca_response["message"],
+                self.current_session.messages[-5:]  # Last 5 exchanges for context
+            )
+        except Exception as e:
+            logger.error(f"Pattern extraction failed: {e}")
+            extractions = []  # Continue with empty extractions
         
         # Create nodes and edges from extractions
         new_nodes = []
@@ -430,7 +434,11 @@ Example format:
         gap_analysis = self.embedding_service.calculate_gap_score(u_vector, c_vector)
         
         # 5. Generate user message
-        message = self._format_gap_message(recent_concept, gap_analysis)
+        try:
+            message = await self._format_gap_message(recent_concept, gap_analysis)
+        except Exception as e:
+            logger.error(f"Failed to format gap message: {e}")
+            message = self._fallback_gap_message(recent_concept, gap_analysis)
         
         return {
             "concept": recent_concept,

@@ -14,6 +14,9 @@ from rich.prompt import Prompt
 from rich.live import Live
 from rich.markdown import Markdown
 
+# Setup logger
+logger = logging.getLogger(__name__)
+
 from .models.config import Settings
 from .core.orchestrator import ExplorationEngine
 from .tools.import_knowledge_graphs import KnowledgeGraphImporter
@@ -367,7 +370,8 @@ def display_session_map(map_data: dict):
     for node in map_data.get('nodes', []):
         concept = node.get('label', 'Unknown')
         node_type = node.get('node_type', 'unknown')
-        domain = node.get('properties', {}).get('domain', 'general')
+        properties = node.get('properties') or {}
+        domain = properties.get('domain', 'general')
         nodes_table.add_row(concept, node_type, domain)
     
     console.print(nodes_table)
