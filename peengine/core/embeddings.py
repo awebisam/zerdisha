@@ -57,7 +57,8 @@ class EmbeddingService:
         return Vector(
             values=embedding,
             model=self.model,
-            dimension=len(embedding)
+            dimension=len(embedding),
+            metadata={"canonical_definition": canonical_definition}  # Store definition
         )
     
     async def _get_embedding(self, text: str) -> List[float]:
@@ -125,18 +126,19 @@ class EmbeddingService:
         """Generate canonical definition for creating c-vector."""
         
         prompt = f"""
-Provide a concise, canonical definition of the concept "{concept}" in the domain of {domain}.
+Provide a precise, canonical definition of "{concept}" in the {domain} domain.
 
 Requirements:
 - Use formal academic terminology
-- Include key properties and characteristics
-- Be precise and unambiguous
-- Limit to 2-3 sentences
-- Focus on the essential, widely-accepted understanding
+- Include essential properties and characteristics  
+- Be concise but comprehensive (2-3 sentences)
+- Focus on widely-accepted understanding
+- Avoid metaphorical language
 
+Domain context: {domain}
 Concept: {concept}
-Domain: {domain}
-"""
+
+Definition:"""
         
         try:
             response = await self.client.chat.completions.create(
@@ -152,7 +154,7 @@ Domain: {domain}
             logger.error(f"Failed to generate canonical definition: {e}")
             return f"Standard definition of {concept} in {domain}"
     
-    async def find_similar_concepts(
+    def find_similar_concepts(
         self, 
         target_vector: Vector, 
         concept_vectors: Dict[str, Vector],

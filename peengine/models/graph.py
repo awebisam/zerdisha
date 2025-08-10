@@ -31,6 +31,7 @@ class Vector(BaseModel):
     values: List[float]
     model: str = "text-embedding-ada-002"
     dimension: int = Field(default_factory=lambda: 1536)
+    metadata: Dict[str, Any] = Field(default_factory=dict)  # Store additional data
 
 
 class Node(BaseModel):

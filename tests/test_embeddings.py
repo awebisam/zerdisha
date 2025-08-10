@@ -13,9 +13,10 @@ from peengine.models.graph import Vector
 def llm_config():
     """Test LLM configuration."""
     return LLMConfig(
-        api_key="test_key",
-        base_url="https://test.api.com",
-        model="gpt-4"
+        azure_openai_key="test_key",
+        azure_openai_endpoint="https://test.api.com",
+        azure_openai_deployment_name="test-deployment",
+        azure_openai_model_name="gpt-4"
     )
 
 
@@ -30,7 +31,12 @@ def embedding_service(llm_config):
 
 def test_calculate_similarity():
     """Test vector similarity calculation."""
-    config = LLMConfig(api_key="test", model="gpt-4")
+    config = LLMConfig(
+        azure_openai_key="test",
+        azure_openai_endpoint="https://test.api.com",
+        azure_openai_deployment_name="test-deployment",
+        azure_openai_model_name="gpt-4"
+    )
     service = EmbeddingService(config)
     
     # Test identical vectors
@@ -50,7 +56,12 @@ def test_calculate_similarity():
 
 def test_calculate_gap_score():
     """Test gap score calculation between vectors."""
-    config = LLMConfig(api_key="test", model="gpt-4")
+    config = LLMConfig(
+        azure_openai_key="test",
+        azure_openai_endpoint="https://test.api.com",
+        azure_openai_deployment_name="test-deployment",
+        azure_openai_model_name="gpt-4"
+    )
     service = EmbeddingService(config)
     
     # Similar vectors (small gap)
@@ -67,7 +78,12 @@ def test_calculate_gap_score():
 
 def test_find_similar_concepts():
     """Test finding similar concepts."""
-    config = LLMConfig(api_key="test", model="gpt-4")
+    config = LLMConfig(
+        azure_openai_key="test",
+        azure_openai_endpoint="https://test.api.com",
+        azure_openai_deployment_name="test-deployment",
+        azure_openai_model_name="gpt-4"
+    )
     service = EmbeddingService(config)
     
     target_vector = Vector(values=[1.0, 0.0, 0.0], model="test", dimension=3)
@@ -125,7 +141,12 @@ async def test_create_c_vector(embedding_service):
 
 def test_analyze_vector_clusters():
     """Test vector cluster analysis."""
-    config = LLMConfig(api_key="test", model="gpt-4")
+    config = LLMConfig(
+        azure_openai_key="test",
+        azure_openai_endpoint="https://test.api.com",
+        azure_openai_deployment_name="test-deployment",
+        azure_openai_model_name="gpt-4"
+    )
     service = EmbeddingService(config)
     
     # Create vectors that form a clear cluster
