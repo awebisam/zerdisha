@@ -128,15 +128,24 @@ async def test_create_c_vector(embedding_service):
         data=[Mock(embedding=[0.4, 0.5, 0.6])]
     )
     
+    # Mock canonical definition generation
+    embedding_service.generate_canonical_definition = AsyncMock(
+        return_value="The branch of physics dealing with quantum systems"
+    )
+    
     c_vector = await embedding_service.create_c_vector(
         concept="quantum mechanics",
-        canonical_definition="The branch of physics dealing with quantum systems",
         domain="physics"
     )
     
     assert isinstance(c_vector, Vector)
     assert len(c_vector.values) == 3
     assert c_vector.model == "text-embedding-ada-002"
+    assert "canonical_definition" in c_vector.metadata
+    assert c_vector.metadata["canonical_definition"] == "The branch of physics dealing with quantum systems"
+    assert c_vector.metadata["concept"] == "quantum mechanics"
+    assert c_vector.metadata["domain"] == "physics"
+    assert c_vector.metadata["vector_type"] == "c_vector"
 
 
 def test_analyze_vector_clusters():

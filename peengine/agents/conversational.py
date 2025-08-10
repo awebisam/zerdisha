@@ -189,50 +189,22 @@ You are a Socratic learning guide focused on exploration through metaphors and q
     def _build_system_prompt(self) -> str:
         """Build the system prompt with persona and context."""
         prompt_parts = [self.base_persona]
-        
-        # Add session context
+
         if self.session_context:
             prompt_parts.append(f"""
 ## Current Session Context:
 - Topic: {self.session_context.get('topic', 'General exploration')}
-- Session stage: {'Beginning of exploration' if self.session_context.get('session_start') else 'Ongoing exploration'}
 """)
-            
-            # Add relevant context from past sessions
-            if self.session_context.get('relevant_context'):
-                context_summary = self._summarize_relevant_context(
-                    self.session_context['relevant_context']
-                )
-                prompt_parts.append(f"""
-## Relevant Past Knowledge:
-{context_summary}
-""")
-        
+
         # Add persona adjustments from MA
         if self.current_persona_adjustments:
+            adjustments_text = "\n".join(self.current_persona_adjustments.get("instructions", []))
             prompt_parts.append(f"""
-## Current Adjustments:
-{json.dumps(self.current_persona_adjustments, indent=2)}
+## Metacognitive Adjustments:
+Follow these instructions for the next turn:
+- {adjustments_text}
 """)
-        
-        # Add specific instructions for current conversation stage
-        conversation_length = len(self.conversation_history)
-        if conversation_length == 0:
-            prompt_parts.append("""
-## Opening Instructions:
-This is the start of the session. Begin by understanding the learner's current mental model of the topic. Ask about their existing understanding or analogies they might already use.
-""")
-        elif conversation_length < 10:
-            prompt_parts.append("""
-## Early Stage Instructions:
-You're in the exploration phase. Focus on expanding their mental model through metaphors and gentle questioning. Don't settle on simple explanations yet.
-""")
-        else:
-            prompt_parts.append("""
-## Deeper Exploration Instructions:
-The learner has shared some thoughts. Now deepen the exploration by challenging assumptions, exploring edge cases of their metaphors, or connecting to new domains.
-""")
-        
+
         return "\n".join(prompt_parts)
     
     def _summarize_relevant_context(self, context_nodes: List[Dict[str, Any]]) -> str:
@@ -259,10 +231,123 @@ The learner has shared some thoughts. Now deepen the exploration by challenging 
         
         return "\n".join(summaries)
     
-    async def update_persona(self, adjustments: Dict[str, Any]) -> None:
-        """Update persona based on MA feedback."""
-        self.current_persona_adjustments.update(adjustments)
-        logger.info(f"Updated persona with adjustments: {list(adjustments.keys())}")
+    async def update_persona(self, adjustments: Optional[Dict[str, Any]]) -> None:
+        """Update persona using intelligent LLM-based synthesis."""
+        if adjustments is None or not adjustments:
+            logger.debug("No persona adjustments provided")
+            return
+        
+        logger.info(f"Synthesizing persona adjustments: {list(adjustments.keys())}")
+        
+        # Use LLM to intelligently synthesize adjustments with current persona
+        synthesized_adjustments = await self._synthesize_persona_adjustments(adjustments)
+        
+        # Track previous state for logging changes
+        previous_adjustments = self.current_persona_adjustments.copy()
+        
+        # Apply synthesized adjustments
+        self.current_persona_adjustments.update(synthesized_adjustments)
+        
+        # Log specific changes made
+        for key, value in synthesized_adjustments.items():
+            if key in previous_adjustments:
+                if previous_adjustments[key] != value:
+                    logger.info(f"Synthesized persona adjustment '{key}': '{previous_adjustments[key]}' -> '{value}'")
+                else:
+                    logger.debug(f"Persona adjustment '{key}' unchanged: '{value}'")
+            else:
+                logger.info(f"Added synthesized persona adjustment '{key}': '{value}'")
+        
+        logger.info(f"CA now has {len(self.current_persona_adjustments)} active persona adjustments")
+        logger.debug(f"Synthesized persona adjustments: {json.dumps(self.current_persona_adjustments, indent=2)}")
+    
+    async def _synthesize_persona_adjustments(self, new_adjustments: Dict[str, Any]) -> Dict[str, Any]:
+        """Use LLM to intelligently synthesize persona adjustments."""
+        
+        # Get current session context
+        session_context = ""
+        if hasattr(self, 'session_context') and self.session_context:
+            session_context = f"Topic: {self.session_context.get('topic', 'Unknown')}"
+        
+        # Get recent conversation for context
+        recent_conversation = ""
+        if self.conversation_history:
+            recent_exchanges = self.conversation_history[-6:]  # Last 3 exchanges
+            recent_conversation = "\n".join([
+                f"{msg['role']}: {msg['content'][:200]}..." if len(msg['content']) > 200 else f"{msg['role']}: {msg['content']}"
+                for msg in recent_exchanges
+            ])
+        
+        prompt = f"""
+You are helping synthesize persona adjustments for a Socratic learning guide. The goal is to intelligently integrate new behavioral adjustments with existing ones, resolving conflicts and creating coherent guidance.
+
+CURRENT PERSONA ADJUSTMENTS:
+{json.dumps(self.current_persona_adjustments, indent=2) if self.current_persona_adjustments else "None"}
+
+NEW ADJUSTMENTS TO INTEGRATE:
+{json.dumps(new_adjustments, indent=2)}
+
+SESSION CONTEXT:
+{session_context}
+
+RECENT CONVERSATION:
+{recent_conversation}
+
+Your task:
+1. Intelligently merge new adjustments with existing ones
+2. Resolve any conflicts between adjustments
+3. Ensure adjustments work together coherently
+4. Adapt adjustments to the current conversation context
+5. Maintain the Socratic learning approach
+
+Return a JSON object with synthesized adjustments that:
+- Preserves effective existing adjustments
+- Integrates new adjustments thoughtfully
+- Resolves conflicts with context-aware decisions
+- Creates coherent behavioral guidance
+
+Focus on these key areas:
+- metaphor_style: How to use metaphors effectively
+- question_depth: Appropriate question complexity
+- topic_focus: How to guide topic boundaries
+- pace: Exploration pacing
+- engagement_style: How to maintain curiosity
+
+Example format:
+{{
+    "metaphor_style": "Encourage diverse metaphors from nature and technology domains",
+    "question_depth": "Use deeper probing questions to challenge assumptions",
+    "topic_focus": "Gently redirect when conversation drifts from core concept",
+    "pace": "Slow down to allow deeper reflection",
+    "engagement_style": "Use more encouraging language to build confidence"
+}}
+"""
+
+        try:
+            response = await self._make_completion_request(
+                [{"role": "user", "content": prompt}],
+                temperature=0.4,  # Balanced creativity and consistency
+                max_tokens=300
+            )
+            
+            # Parse JSON response
+            synthesized_text = response.choices[0].message.content.strip()
+            
+            # Extract JSON from response
+            import re
+            json_match = re.search(r'\{.*\}', synthesized_text, re.DOTALL)
+            if json_match:
+                synthesized_adjustments = json.loads(json_match.group())
+                logger.info("Successfully synthesized persona adjustments using LLM")
+                return synthesized_adjustments
+            else:
+                logger.warning("Could not parse JSON from LLM response, using direct merge")
+                return new_adjustments
+                
+        except Exception as e:
+            logger.error(f"Failed to synthesize persona adjustments: {e}")
+            # Fallback to simple merge
+            return new_adjustments
     
     async def get_canonical_check(self, concept: str) -> Dict[str, Any]:
         """Perform canonical knowledge check for a concept."""

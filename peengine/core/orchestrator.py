@@ -195,9 +195,12 @@ class ExplorationEngine:
             ca_response.get("reasoning", {})
         )
         
-        # Apply MA suggestions if any
+        # Apply MA persona adjustments immediately if present
         if ma_analysis.get("persona_adjustments"):
-            await self.ca.update_persona(ma_analysis["persona_adjustments"])
+            adjustments = ma_analysis["persona_adjustments"]
+            logger.info(f"MA provided persona adjustments: {list(adjustments.keys())}")
+            await self.ca.update_persona(adjustments)
+            logger.info(f"Applied persona adjustments to CA for session {self.current_session.id}")
         
         # Update MongoDB with analysis data
         analysis_data = {
@@ -269,22 +272,139 @@ class ExplorationEngine:
         return relevant_nodes
     
     async def _show_session_map(self) -> Dict[str, Any]:
-        """Show current session's concept map."""
+        """Show current session's concept map with nodes and contextual relationship descriptions."""
         if not self.current_session:
             return {"error": "No active session"}
         
+        # Fetch all nodes created in this session
         nodes = []
         for node_id in self.current_session.nodes_created:
             node_data = self.graph_db.get_node(node_id)
             if node_data:
                 nodes.append(node_data)
         
+        # Fetch all edges created in this session
+        edges = []
+        for edge_id in self.current_session.edges_created:
+            edge_data = self.graph_db.get_edge(edge_id)
+            if edge_data:
+                edges.append(edge_data)
+        
+        # Generate contextual relationship descriptions using LLM
+        relationship_descriptions = []
+        if edges:
+            relationship_descriptions = await self._generate_relationship_descriptions(nodes, edges)
+        
         return {
             "session_id": self.current_session.id,
             "topic": self.current_session.topic,
             "nodes": nodes,
-            "connections": len(self.current_session.edges_created)
+            "edges": edges,
+            "relationship_descriptions": relationship_descriptions,
+            "node_count": len(nodes),
+            "connection_count": len(edges)
         }
+    
+    async def _generate_relationship_descriptions(self, nodes: List[Dict], edges: List[Dict]) -> List[str]:
+        """Generate natural language descriptions of concept relationships using LLM."""
+        if not edges:
+            return []
+        
+        # Build context about the session and concepts
+        session_context = f"Session Topic: {self.current_session.topic}\n"
+        
+        # Create concept summaries
+        concept_summaries = {}
+        for node in nodes:
+            label = node.get('label', 'Unknown')
+            node_type = node.get('node_type', 'concept')
+            domain = node.get('properties', {}).get('domain', 'general')
+            context = node.get('properties', {}).get('context', '')
+            
+            concept_summaries[label] = {
+                'type': node_type,
+                'domain': domain,
+                'context': context[:100] + '...' if len(context) > 100 else context
+            }
+        
+        # Build relationship data for LLM
+        relationships_data = []
+        for edge in edges:
+            source_label = edge.get('source_label', 'Unknown')
+            target_label = edge.get('target_label', 'Unknown')
+            edge_type = edge.get('edge_type', 'relates')
+            
+            relationships_data.append({
+                'source': source_label,
+                'target': target_label,
+                'type': edge_type,
+                'source_info': concept_summaries.get(source_label, {}),
+                'target_info': concept_summaries.get(target_label, {})
+            })
+        
+        # Get recent conversation context for relationship understanding
+        recent_context = ""
+        if self.current_session.messages:
+            recent_messages = self.current_session.messages[-4:]  # Last 4 exchanges
+            recent_context = "\n".join([
+                f"User: {msg.get('user', '')}\nAssistant: {msg.get('assistant', '')}"
+                for msg in recent_messages
+            ])
+        
+        prompt = f"""
+You are describing the conceptual relationships discovered in a learning session. Create natural, insightful descriptions that help the learner understand how their concepts connect.
+
+{session_context}
+
+CONCEPTS EXPLORED:
+{json.dumps(concept_summaries, indent=2)}
+
+RELATIONSHIPS TO DESCRIBE:
+{json.dumps(relationships_data, indent=2)}
+
+RECENT CONVERSATION CONTEXT:
+{recent_context}
+
+For each relationship, create a natural language description that:
+1. Explains how the concepts connect in the context of this exploration
+2. Uses language that reflects the learner's metaphorical thinking
+3. Highlights the significance of the connection
+4. Is engaging and insightful, not just technical
+
+Format each description as a complete sentence starting with "•". Keep descriptions concise but meaningful (1-2 sentences each).
+
+Example format:
+• The concept of "quantum superposition" emerges from your exploration of "uncertainty," showing how your intuition about "multiple possibilities existing simultaneously" bridges abstract physics with everyday decision-making.
+• Your metaphor of "energy flow" creates a powerful connection between "thermodynamics" and "biological systems," revealing how the same principles govern both engines and living cells.
+"""
+
+        try:
+            response = await self.ca.client.chat.completions.create(
+                model=self.ca._get_deployment_name(),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.6,  # Creative but focused
+                max_tokens=400
+            )
+            
+            descriptions_text = response.choices[0].message.content.strip()
+            
+            # Extract bullet points
+            descriptions = []
+            for line in descriptions_text.split('\n'):
+                line = line.strip()
+                if line.startswith('•'):
+                    descriptions.append(line)
+            
+            logger.info(f"Generated {len(descriptions)} relationship descriptions")
+            return descriptions
+            
+        except Exception as e:
+            logger.error(f"Failed to generate relationship descriptions: {e}")
+            # Fallback to simple descriptions
+            return [
+                f"• {edge.get('source_label', 'Unknown')} connects to {edge.get('target_label', 'Unknown')} through {edge.get('edge_type', 'relationship')}"
+                for edge in edges
+            ]
     
     async def _gap_check(self) -> Dict[str, Any]:
         """Check gaps between user understanding and canonical knowledge."""
@@ -333,41 +453,40 @@ class ExplorationEngine:
         }
     
     async def _identify_recent_concept(self) -> Optional[str]:
-        """Extract the most recently discussed concept from session messages."""
+        """Extract the most recently discussed concept using a direct LLM call for simplicity and accuracy."""
         if not self.current_session or not self.current_session.messages:
             return None
-        
-        # Get the last few message exchanges for context
-        recent_messages = self.current_session.messages[-3:]  # Last 3 exchanges
-        
-        # Build conversation text for analysis
-        conversation_text = ""
-        for msg in recent_messages:
-            conversation_text += f"User: {msg.get('user', '')}\n"
-            conversation_text += f"Assistant: {msg.get('assistant', '')}\n"
-        
-        # Use the pattern detector to identify the most prominent concept
+
+        recent_messages_formatted = "\n".join([
+            f"User: {msg.get('user', '')}\nAssistant: {msg.get('assistant', '')}"
+            for msg in self.current_session.messages[-6:] # Last 3 exchanges
+        ])
+
+        prompt = f"""
+Given the following recent conversation history, what is the single, most prominent concept being discussed?
+Respond with only the concept name and nothing else.
+
+Conversation:
+---
+{recent_messages_formatted}
+---
+
+Concept:"""
+
         try:
-            # Create a simple extraction request focused on the main concept
-            extractions = await self.pd.extract_patterns(
-                recent_messages[-1].get('user', ''),  # Most recent user input
-                recent_messages[-1].get('assistant', ''),  # Most recent assistant response
-                recent_messages  # Full context
+            response = await self.ca.client.chat.completions.create(
+                model=self.ca._get_deployment_name(),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=50
             )
-            
-            if extractions:
-                # Return the concept with highest confidence from most recent extraction
-                best_extraction = max(extractions, key=lambda x: x.confidence)
-                return best_extraction.concept
-            
+            concept = response.choices[0].message.content.strip().replace('"', '')
+            logger.info(f"Identified recent concept via LLM: {concept}")
+            return concept
         except Exception as e:
-            logger.error(f"Failed to extract recent concept: {e}")
-        
-        # Fallback: try to extract from the session topic or recent messages
-        if self.current_session.topic:
+            logger.error(f"LLM-based concept identification failed: {e}")
+            # Fallback to topic as a last resort
             return self.current_session.topic
-        
-        return None
     
     async def _get_user_vector(self, concept: str) -> Optional[Vector]:
         """Retrieve u_vector for a concept from Neo4j."""
@@ -408,7 +527,7 @@ class ExplorationEngine:
         return None
     
     async def _get_or_create_canonical_vector(self, concept: str) -> Optional[Vector]:
-        """Fetch existing c_vector or generate new one."""
+        """Fetch existing c_vector or generate new one with enhanced domain intelligence."""
         try:
             # First, try to find existing c_vector in the database
             all_concept_nodes = self.graph_db.search_nodes_by_content(concept, limit=10)
@@ -423,15 +542,14 @@ class ExplorationEngine:
                         dimension=c_vector_data.get('dimension', 1536)
                     )
             
-            # If no existing c_vector, generate a new one
-            # Determine domain from session topic or default to 'general'
-            domain = self.current_session.topic if self.current_session else 'general'
+            # If no existing c_vector, generate a new one with enhanced domain detection
+            domain = await self._detect_concept_domain(concept)
             
-            # Generate canonical definition
+            # Generate canonical definition with domain-specific intelligence
             canonical_definition = await self.embedding_service.generate_canonical_definition(concept, domain)
             
-            # Create c_vector
-            c_vector = await self.embedding_service.create_c_vector(concept, canonical_definition, domain)
+            # Create c_vector with enhanced metadata
+            c_vector = await self.embedding_service.create_c_vector(concept, domain)
             
             # Save c_vector to Neo4j by updating or creating a concept node
             concept_node_id = None
@@ -482,36 +600,198 @@ class ExplorationEngine:
             logger.error(f"Failed to get or create c_vector for {concept}: {e}")
             return None
     
-    def _format_gap_message(self, concept: str, gap_analysis: Dict[str, Any]) -> str:
-        """Create user-friendly gap analysis message."""
+    async def _detect_concept_domain(self, concept: str) -> str:
+        """Use LLM to intelligently detect the most appropriate domain for a concept."""
+        
+        # Get session context for domain detection
+        session_context = ""
+        if self.current_session:
+            session_context = f"Session topic: {self.current_session.topic}\n"
+            if self.current_session.messages:
+                recent_messages = self.current_session.messages[-3:]
+                session_context += "Recent conversation:\n" + "\n".join([
+                    f"User: {msg.get('user', '')}\nAssistant: {msg.get('assistant', '')}"
+                    for msg in recent_messages
+                ])
+        
+        prompt = f"""
+Determine the most appropriate academic domain for the concept "{concept}" based on the context.
+
+{session_context}
+
+Consider these domains:
+- physics (fundamental forces, matter, energy, quantum mechanics, relativity)
+- chemistry (molecules, reactions, bonds, thermodynamics, materials)
+- biology (life processes, evolution, genetics, ecology, physiology)
+- mathematics (numbers, equations, proofs, logic, geometry, statistics)
+- philosophy (ethics, logic, metaphysics, epistemology, consciousness)
+- computer_science (algorithms, data structures, programming, AI, systems)
+- psychology (cognition, behavior, learning, perception, social dynamics)
+- economics (markets, trade, value, incentives, systems)
+- engineering (design, systems, optimization, problem-solving)
+- general (interdisciplinary or everyday concepts)
+
+Based on the concept "{concept}" and the conversation context, what is the single most appropriate domain?
+
+Respond with just the domain name (e.g., "physics", "biology", "general").
+"""
+
+        try:
+            response = await self.ca.client.chat.completions.create(
+                model=self.ca._get_deployment_name(),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,  # Low temperature for consistent domain classification
+                max_tokens=50
+            )
+            
+            domain = response.choices[0].message.content.strip().lower()
+            
+            # Validate domain is in our expected list
+            valid_domains = [
+                'physics', 'chemistry', 'biology', 'mathematics', 'philosophy',
+                'computer_science', 'psychology', 'economics', 'engineering', 'general'
+            ]
+            
+            if domain in valid_domains:
+                logger.info(f"Detected domain '{domain}' for concept '{concept}'")
+                return domain
+            else:
+                logger.warning(f"Invalid domain '{domain}' detected, defaulting to 'general'")
+                return 'general'
+                
+        except Exception as e:
+            logger.error(f"Domain detection failed for {concept}: {e}")
+            # Fallback: use session topic or default to general
+            if self.current_session and self.current_session.topic:
+                # Simple keyword matching as fallback
+                topic_lower = self.current_session.topic.lower()
+                if any(word in topic_lower for word in ['physics', 'quantum', 'energy', 'force']):
+                    return 'physics'
+                elif any(word in topic_lower for word in ['chemistry', 'molecule', 'reaction', 'chemical']):
+                    return 'chemistry'
+                elif any(word in topic_lower for word in ['biology', 'life', 'evolution', 'genetic']):
+                    return 'biology'
+                elif any(word in topic_lower for word in ['math', 'equation', 'number', 'calculate']):
+                    return 'mathematics'
+                elif any(word in topic_lower for word in ['philosophy', 'ethics', 'consciousness', 'meaning']):
+                    return 'philosophy'
+                elif any(word in topic_lower for word in ['computer', 'algorithm', 'programming', 'ai']):
+                    return 'computer_science'
+                elif any(word in topic_lower for word in ['psychology', 'behavior', 'mind', 'cognitive']):
+                    return 'psychology'
+                elif any(word in topic_lower for word in ['economics', 'market', 'trade', 'money']):
+                    return 'economics'
+                elif any(word in topic_lower for word in ['engineering', 'design', 'system', 'build']):
+                    return 'engineering'
+            
+            return 'general'
+    
+    async def _format_gap_message(self, concept: str, gap_analysis: Dict[str, Any]) -> str:
+        """Create personalized, contextual gap analysis message using LLM."""
         similarity = gap_analysis.get('similarity', 0.0)
         gap_score = gap_analysis.get('gap_score', 1.0)
         severity = gap_analysis.get('severity', 'unknown')
+        canonical_definition = gap_analysis.get('canonical_definition', '')
         
-        # Format similarity as percentage
+        # Get recent conversation context for personalization
+        recent_context = ""
+        if self.current_session and self.current_session.messages:
+            recent_messages = self.current_session.messages[-3:]  # Last 3 exchanges
+            recent_context = "\n".join([
+                f"User: {msg.get('user', '')}\nAssistant: {msg.get('assistant', '')}"
+                for msg in recent_messages
+            ])
+        
+        # Extract user's metaphors and explanations from recent context
+        user_metaphors = await self._extract_user_metaphors(concept, recent_context)
+        
+        prompt = f"""
+You are providing personalized feedback on a learner's understanding gap analysis. Be encouraging, insightful, and specific to their learning journey.
+
+CONCEPT: {concept}
+SIMILARITY SCORE: {similarity:.2f} ({int(similarity * 100)}% alignment)
+GAP SCORE: {gap_score:.2f}
+SEVERITY: {severity}
+
+CANONICAL DEFINITION:
+{canonical_definition}
+
+USER'S RECENT EXPLORATION:
+{recent_context}
+
+USER'S METAPHORS DETECTED:
+{user_metaphors}
+
+SESSION TOPIC: {self.current_session.topic if self.current_session else 'General exploration'}
+
+Create a personalized gap analysis message that:
+1. Acknowledges their specific metaphors and thinking patterns
+2. Explains what the gap means in the context of their exploration
+3. Highlights what they're doing well
+4. Suggests specific ways to bridge the gap using their preferred learning style
+5. Maintains an encouraging, curious tone that fits the Socratic learning approach
+6. Uses appropriate emoji and formatting for engagement
+
+Keep it conversational and specific to their journey, not generic. Reference their actual metaphors and thinking patterns.
+"""
+
+        try:
+            response = await self.ca.client.chat.completions.create(
+                model=self.ca._get_deployment_name(),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.7,  # Creative but focused
+                max_tokens=400
+            )
+            
+            personalized_message = response.choices[0].message.content.strip()
+            logger.info(f"Generated personalized gap analysis message for {concept}")
+            return personalized_message
+            
+        except Exception as e:
+            logger.error(f"Failed to generate personalized gap message: {e}")
+            # Fallback to simpler programmatic version
+            return self._fallback_gap_message(concept, gap_analysis)
+    
+    def _fallback_gap_message(self, concept: str, gap_analysis: Dict[str, Any]) -> str:
+        """Fallback gap message if LLM generation fails."""
+        similarity = gap_analysis.get('similarity', 0.0)
+        severity = gap_analysis.get('severity', 'unknown')
         similarity_percent = int(similarity * 100)
         
-        if severity == 'low':
-            message = f"🎯 **Gap Analysis for '{concept}'**\n\n"
-            message += f"Your understanding shows **{similarity_percent}% alignment** with canonical knowledge - excellent! "
-            message += f"You've grasped the core concepts well. The small gap ({gap_score:.2f}) suggests minor "
-            message += f"differences in emphasis or perspective that could be worth exploring further."
-            
-        elif severity == 'medium':
-            message = f"🔍 **Gap Analysis for '{concept}'**\n\n"
-            message += f"Your understanding shows **{similarity_percent}% alignment** with canonical knowledge. "
-            message += f"There's a moderate gap ({gap_score:.2f}) that indicates some key aspects of the canonical "
-            message += f"understanding might be missing or emphasized differently in your mental model. "
-            message += f"This is a great opportunity to deepen your grasp of the concept."
-            
-        else:  # high severity
-            message = f"🚀 **Gap Analysis for '{concept}'**\n\n"
-            message += f"Your understanding shows **{similarity_percent}% alignment** with canonical knowledge. "
-            message += f"There's a significant gap ({gap_score:.2f}) which suggests your mental model emphasizes "
-            message += f"different aspects than the canonical understanding. This isn't necessarily wrong - "
-            message += f"it might indicate you're approaching the concept from a unique angle that could lead to "
-            message += f"interesting insights!"
+        if severity in ['minimal', 'low']:
+            return f"🎯 **Gap Analysis for '{concept}'**\n\nYour understanding shows **{similarity_percent}% alignment** with canonical knowledge - excellent work! You've grasped the core concepts well."
+        elif severity == 'moderate':
+            return f"🔍 **Gap Analysis for '{concept}'**\n\nYour understanding shows **{similarity_percent}% alignment** with canonical knowledge. There's room to deepen your grasp - a great learning opportunity!"
+        else:
+            return f"🚀 **Gap Analysis for '{concept}'**\n\nYour understanding shows **{similarity_percent}% alignment** with canonical knowledge. You're approaching this from a unique angle - let's explore the canonical perspective!"
+    
+    async def _extract_user_metaphors(self, concept: str, recent_context: str) -> str:
+        """Extract user's metaphors and thinking patterns for personalization."""
+        if not recent_context:
+            return "No recent metaphors detected"
         
-        message += f"\n\n*This analysis compares your metaphorical understanding with formal academic definitions.*"
+        prompt = f"""
+Analyze this conversation for metaphors, analogies, and thinking patterns the user employed when discussing "{concept}":
+
+{recent_context}
+
+Extract:
+1. Specific metaphors used (e.g., "like water flowing", "building blocks", "dance")
+2. Analogies drawn to other domains
+3. Thinking patterns (visual, mechanical, organic, mathematical, etc.)
+
+Return a concise summary of their metaphorical approach.
+"""
         
-        return message
+        try:
+            response = await self.ca.client.chat.completions.create(
+                model=self.ca._get_deployment_name(),
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=150
+            )
+            
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"Failed to extract user metaphors: {e}")
+            return "Unable to analyze metaphorical patterns"

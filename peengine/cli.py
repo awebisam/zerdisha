@@ -4,7 +4,7 @@ import asyncio
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any
 
 import typer
 from rich.console import Console
@@ -139,7 +139,8 @@ async def interactive_session(engine: ExplorationEngine):
             if response.get('ma_insights'):
                 console.print("[dim]💭 Meta-insights:[/dim]")
                 for insight in response['ma_insights']:
-                    console.print(f"  • {insight.get('observation', insight)}")
+                    insight_text = insight.get('observation', insight) if isinstance(insight, dict) else str(insight)
+                    console.print(f"  • {insight_text}")
             
             # Show suggested commands
             if response.get('suggested_commands'):
@@ -149,11 +150,25 @@ async def interactive_session(engine: ExplorationEngine):
             console.print("\n[yellow]Session interrupted. Use /end to save properly.[/yellow]")
             break
         except Exception as e:
-            console.print(f"[red]Error: {e}[/red]")
+            # Use adaptive error recovery for conversation processing
+            error_context = {
+                "error_type": "conversation_processing",
+                "error": str(e),
+                "user_input": user_input,
+                "session_active": True,
+                "session_topic": engine.current_session.topic if engine.current_session else None
+            }
+            
+            recovery_message = await generate_adaptive_conversation_error(engine, error_context)
+            console.print(Panel(
+                Markdown(recovery_message),
+                title="⚠️ Processing Issue",
+                border_style="yellow"
+            ))
 
 
 async def handle_command(engine: ExplorationEngine, command_input: str) -> dict:
-    """Handle session commands."""
+    """Handle session commands with adaptive error recovery."""
     parts = command_input[1:].split()  # Remove '/' and split
     command = parts[0] if parts else ""
     args = parts[1:] if len(parts) > 1 else []
@@ -191,7 +206,21 @@ Just type naturally to continue exploring!
                 display_seed(result)
                 
         except Exception as e:
-            console.print(f"[red]Command failed: {e}[/red]")
+            # Use adaptive error recovery
+            error_context = {
+                "command": command,
+                "args": args,
+                "error": str(e),
+                "session_active": engine.current_session is not None,
+                "session_topic": engine.current_session.topic if engine.current_session else None
+            }
+            
+            recovery_message = await generate_adaptive_error_message(engine, error_context)
+            console.print(Panel(
+                Markdown(recovery_message),
+                title="⚠️ Command Issue",
+                border_style="yellow"
+            ))
     
     else:
         console.print(f"[red]Unknown command: /{command}[/red]")
@@ -200,25 +229,182 @@ Just type naturally to continue exploring!
     return {}
 
 
+async def generate_adaptive_conversation_error(engine: ExplorationEngine, error_context: Dict[str, Any]) -> str:
+    """Generate context-aware error messages for conversation processing failures."""
+    
+    error = error_context.get('error', 'Unknown error')
+    user_input = error_context.get('user_input', 'your input')
+    session_topic = error_context.get('session_topic', 'Unknown')
+    
+    prompt = f"""
+A learner encountered an issue while exploring "{session_topic}". They said: "{user_input[:100]}..."
+
+The system error was: {error}
+
+Create a helpful, encouraging response that:
+1. Acknowledges their input and shows you understood their intent
+2. Explains the issue in simple, non-technical terms
+3. Suggests how to continue the exploration
+4. Maintains the Socratic learning atmosphere
+5. Offers alternative ways to explore their question
+
+Keep it warm, supportive, and focused on continuing their learning journey.
+"""
+
+    try:
+        response = await engine.ca.client.chat.completions.create(
+            model=engine.ca._get_deployment_name(),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.6,
+            max_tokens=200
+        )
+        
+        return response.choices[0].message.content.strip()
+        
+    except Exception as llm_error:
+        logger.error(f"Failed to generate adaptive conversation error: {llm_error}")
+        return f"""
+I can see you're exploring interesting ideas about {session_topic}, but I encountered a technical hiccup processing your thought.
+
+**Let's keep the exploration going:**
+• Try rephrasing your question or observation
+• We can approach this topic from a different angle
+• Your curiosity is valuable - don't let this pause stop you!
+
+What aspect of {session_topic} would you like to explore next?
+"""
+
+
+async def generate_adaptive_error_message(engine: ExplorationEngine, error_context: Dict[str, Any]) -> str:
+    """Generate context-aware error messages and recovery suggestions using LLM."""
+    
+    command = error_context.get('command', 'unknown')
+    error = error_context.get('error', 'Unknown error')
+    session_active = error_context.get('session_active', False)
+    session_topic = error_context.get('session_topic', 'Unknown')
+    
+    # Get recent conversation context if available
+    recent_context = ""
+    if engine.current_session and engine.current_session.messages:
+        recent_messages = engine.current_session.messages[-2:]  # Last 2 exchanges
+        recent_context = "\n".join([
+            f"User: {msg.get('user', '')}\nAssistant: {msg.get('assistant', '')}"
+            for msg in recent_messages
+        ])
+    
+    prompt = f"""
+You are helping a learner who encountered an issue while using a learning exploration tool. Provide a helpful, encouraging error message with specific recovery suggestions.
+
+COMMAND THAT FAILED: /{command}
+ERROR DETAILS: {error}
+SESSION ACTIVE: {session_active}
+SESSION TOPIC: {session_topic}
+
+RECENT CONVERSATION:
+{recent_context}
+
+Create a helpful error message that:
+1. Acknowledges what they were trying to do
+2. Explains what went wrong in simple terms
+3. Provides specific steps to recover or work around the issue
+4. Maintains an encouraging, supportive tone
+5. Suggests alternative approaches if the main command isn't working
+6. Relates to their current exploration context
+
+Keep it concise but helpful. Use a warm, understanding tone that fits the Socratic learning environment.
+
+Example format:
+I understand you were trying to [what they wanted to do]. It looks like [simple explanation of issue]. 
+
+Here's how we can get back on track:
+• [specific recovery step 1]
+• [specific recovery step 2]
+• [alternative approach if needed]
+
+Your exploration of {session_topic} is going well - let's keep the momentum going!
+"""
+
+    try:
+        response = await engine.ca.client.chat.completions.create(
+            model=engine.ca._get_deployment_name(),
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.5,  # Balanced helpfulness and consistency
+            max_tokens=250
+        )
+        
+        adaptive_message = response.choices[0].message.content.strip()
+        logger.info(f"Generated adaptive error message for /{command} failure")
+        return adaptive_message
+        
+    except Exception as llm_error:
+        logger.error(f"Failed to generate adaptive error message: {llm_error}")
+        # Fallback to simple error message
+        return f"""
+I encountered an issue with the `/{command}` command: {error}
+
+**Quick fixes to try:**
+• Make sure you have an active session running
+• Check your internet connection for AI services
+• Try the command again in a moment
+• Use `/help` to see available commands
+
+Don't worry - your exploration progress is saved! Let's keep going.
+"""
+
+
 def display_session_map(map_data: dict):
-    """Display session concept map."""
+    """Display session concept map with nodes and contextual relationship descriptions."""
     if 'error' in map_data:
         console.print(f"[red]{map_data['error']}[/red]")
         return
     
-    table = Table(title=f"Session Map: {map_data.get('topic', 'Unknown')}")
-    table.add_column("Concept", style="cyan")
-    table.add_column("Type", style="green") 
-    table.add_column("Domain", style="yellow")
+    # Display nodes table
+    nodes_table = Table(title=f"Session Map: {map_data.get('topic', 'Unknown')}")
+    nodes_table.add_column("Concept", style="cyan")
+    nodes_table.add_column("Type", style="green") 
+    nodes_table.add_column("Domain", style="yellow")
     
     for node in map_data.get('nodes', []):
         concept = node.get('label', 'Unknown')
         node_type = node.get('node_type', 'unknown')
         domain = node.get('properties', {}).get('domain', 'general')
-        table.add_row(concept, node_type, domain)
+        nodes_table.add_row(concept, node_type, domain)
     
-    console.print(table)
-    console.print(f"[dim]Connections made: {map_data.get('connections', 0)}[/dim]")
+    console.print(nodes_table)
+    
+    # Display relationships with contextual descriptions
+    edges = map_data.get('edges', [])
+    relationship_descriptions = map_data.get('relationship_descriptions', [])
+    
+    if edges:
+        console.print("\n[bold]Conceptual Connections:[/bold]")
+        
+        # If we have LLM-generated descriptions, use them
+        if relationship_descriptions:
+            for desc in relationship_descriptions:
+                console.print(f"• {desc}")
+        else:
+            # Fallback to simple table format
+            relationships_table = Table()
+            relationships_table.add_column("Connection", style="magenta", width=60)
+            relationships_table.add_column("Type", style="blue")
+            
+            for edge in edges:
+                source_label = edge.get('source_label', 'Unknown')
+                target_label = edge.get('target_label', 'Unknown')
+                edge_type = edge.get('edge_type', 'relates')
+                
+                # Format relationship in human-readable form (escape brackets for Rich)
+                connection_text = f"\\[{source_label}] --({edge_type})--> \\[{target_label}]"
+                relationships_table.add_row(connection_text, edge_type)
+            
+            console.print(relationships_table)
+    
+    # Summary statistics
+    node_count = map_data.get('node_count', 0)
+    connection_count = map_data.get('connection_count', 0)
+    
+    console.print(f"\n[dim]📊 Summary: {node_count} concepts, {connection_count} connections[/dim]")
 
 
 def display_gap_check(gap_data: dict):

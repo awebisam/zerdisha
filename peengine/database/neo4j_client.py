@@ -147,6 +147,28 @@ class Neo4jClient:
             result = session.run(query, {"node_type": node_type})
             return [dict(record["n"]) for record in result]
     
+    def get_edge(self, edge_id: str) -> Optional[Dict[str, Any]]:
+        """Get an edge by ID with source and target node information."""
+        query = """
+        MATCH (source:Node)-[r:RELATES {id: $edge_id}]->(target:Node)
+        RETURN r, source.id as source_id, source.label as source_label, 
+               target.id as target_id, target.label as target_label
+        """
+        
+        with self.session() as session:
+            result = session.run(query, {"edge_id": edge_id})
+            record = result.single()
+            if record:
+                edge_data = dict(record["r"])
+                edge_data.update({
+                    "source_id": record["source_id"],
+                    "source_label": record["source_label"],
+                    "target_id": record["target_id"],
+                    "target_label": record["target_label"]
+                })
+                return edge_data
+            return None
+    
     def get_connected_nodes(self, node_id: str, max_depth: int = 2) -> List[Dict[str, Any]]:
         """Get nodes connected to a given node within max_depth."""
         query = """
