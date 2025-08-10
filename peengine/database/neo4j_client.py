@@ -237,3 +237,40 @@ class Neo4jClient:
         with self.session() as session:
             result = session.run(query, {"query_text": query_text, "limit": limit})
             return [dict(record["n"]) for record in result]
+    
+    def clear_all_data(self) -> Dict[str, Any]:
+        """Clear all data from the Neo4j database."""
+        stats = {"nodes_deleted": 0, "relationships_deleted": 0, "indexes_dropped": 0}
+        
+        with self.session() as session:
+            try:
+                # Get counts before deletion
+                node_count_result = session.run("MATCH (n) RETURN count(n) as count")
+                stats["nodes_deleted"] = node_count_result.single()["count"]
+                
+                rel_count_result = session.run("MATCH ()-[r]-() RETURN count(r) as count")  
+                stats["relationships_deleted"] = rel_count_result.single()["count"]
+                
+                # Delete all relationships first
+                session.run("MATCH ()-[r]-() DELETE r")
+                
+                # Delete all nodes
+                session.run("MATCH (n) DELETE n")
+                
+                # Drop all indexes and constraints (optional - they'll be recreated on next use)
+                try:
+                    indexes_result = session.run("SHOW INDEXES")
+                    for record in indexes_result:
+                        index_name = record.get("name")
+                        if index_name:
+                            session.run(f"DROP INDEX {index_name} IF EXISTS")
+                            stats["indexes_dropped"] += 1
+                except Exception as e:
+                    logger.warning(f"Could not drop indexes: {e}")
+                
+                logger.info(f"Cleared Neo4j database: {stats['nodes_deleted']} nodes, {stats['relationships_deleted']} relationships")
+                return stats
+                
+            except Exception as e:
+                logger.error(f"Failed to clear Neo4j database: {e}")
+                raise

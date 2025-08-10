@@ -197,6 +197,37 @@ class MongoDBClient:
             logger.error(f"Failed to end session: {e}")
             return False
     
+    async def clear_all_data(self) -> Dict[str, Any]:
+        """Clear all data from MongoDB collections."""
+        stats = {"sessions_deleted": 0, "conversations_deleted": 0, "collections_dropped": 0}
+        
+        try:
+            # Get counts before deletion
+            sessions_count = await self.db.sessions.count_documents({})
+            conversations_count = await self.db.conversations.count_documents({})
+            stats["sessions_deleted"] = sessions_count
+            stats["conversations_deleted"] = conversations_count
+            
+            # Drop collections completely (faster than deleting documents)
+            await self.db.sessions.drop()
+            await self.db.conversations.drop()
+            stats["collections_dropped"] = 2
+            
+            # Recreate collections with any required indexes
+            await self.db.create_collection("sessions")
+            await self.db.create_collection("conversations")
+            
+            # Create indexes for performance
+            await self.db.sessions.create_index("session_id", unique=True)
+            await self.db.conversations.create_index([("session_id", 1), ("timestamp", 1)])
+            
+            logger.info(f"Cleared MongoDB: {sessions_count} sessions, {conversations_count} conversations")
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Failed to clear MongoDB: {e}")
+            raise
+    
     async def search_sessions(self, query: Dict[str, Any], limit: int = 10) -> List[Dict[str, Any]]:
         """Search sessions with query."""
         try:

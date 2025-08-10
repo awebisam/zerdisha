@@ -386,6 +386,36 @@ def import_knowledge_graphs():
     asyncio.run(_import_graphs())
 
 
+@app.command(name="start-fresh")  
+def start_fresh():
+    """Clear all databases and start completely fresh. DESTRUCTIVE OPERATION!"""
+    async def _clear_databases():
+        try:
+            settings = Settings()
+            setup_logging(settings.log_level)
+            
+            from .tools.clear_databases import DatabaseCleaner
+            cleaner = DatabaseCleaner(settings)
+            
+            result = await cleaner.clear_all_databases()
+            
+            if result.get("cancelled"):
+                console.print("[yellow]Operation cancelled by user.[/yellow]")
+                return  # Exit cleanly without error
+            elif not result.get("success"):
+                console.print("[red]Database clearing completed with errors.[/red]")
+                raise typer.Exit(1)
+            else:
+                console.print("[green]Database clearing completed successfully.[/green]")
+                return  # Exit cleanly without error
+                
+        except Exception as e:
+            console.print(f"[red]✗[/red] Database clearing failed: {e}")
+            raise typer.Exit(1)
+    
+    asyncio.run(_clear_databases())
+
+
 def main():
     """Main entry point."""
     app()
