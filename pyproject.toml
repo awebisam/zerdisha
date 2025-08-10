@@ -3,9 +3,9 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "peengine"
+name = "zerdisha"
 version = "0.1.0"
-description = "Personal Exploration Engine - A terminal-based interactive learning tool"
+description = "Zerdisha - A terminal-based interactive learning tool"
 authors = [{name = "Awebisam", email = "your.email@example.com"}]
 license = {text = "MIT"}
 readme = "README.md"
@@ -38,7 +38,7 @@ dev = [
 ]
 
 [project.scripts]
-peengine = "peengine.cli:app"
+zerdisha = "peengine.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["."]

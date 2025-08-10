@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Installation and setup script for Personal Exploration Engine."""
+"""Installation and setup script for Zerdisha."""
 
 import os
 import sys
@@ -86,7 +86,7 @@ def test_installation():
 
 def main():
     """Main installation process."""
-    print("🧠 Personal Exploration Engine - Setup")
+    print("🧠 Zerdisha - Setup")
     print("=" * 50)
     
     # Check requirements
@@ -111,9 +111,9 @@ def main():
     print("\nNext steps:")
     print("1. Edit .env with your API keys and Neo4j credentials")
     print("2. Start Neo4j database")
-    print("3. Run: peengine init")
-    print("4. Start exploring: peengine start 'your topic'")
-    print("\nFor help: peengine --help")
+    print("3. Run: zerdisha init")
+    print("4. Start exploring: zerdisha start 'your topic'")
+    print("\nFor help: zerdisha --help")
 
 
 if __name__ == "__main__":

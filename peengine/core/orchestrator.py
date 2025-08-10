@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 class ExplorationEngine:
-    """Main orchestrator for the Personal Exploration Engine."""
+    """Main orchestrator for Zerdisha."""
 
     def __init__(self, settings: Settings):
         self.settings = settings

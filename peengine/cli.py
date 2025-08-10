@@ -1,4 +1,4 @@
-"""CLI interface for the Personal Exploration Engine."""
+"""CLI interface for Zerdisha."""
 
 from .tools.import_knowledge_graphs import KnowledgeGraphImporter
 from .core.orchestrator import ExplorationEngine
@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 
 # Initialize Typer app and Rich console
 app = typer.Typer(
-    name="peengine",
-    help="Personal Exploration Engine - A terminal-based interactive learning tool"
+    name="zerdisha",
+    help="Zerdisha - A terminal-based interactive learning tool"
 )
 console = Console()
 
@@ -684,7 +684,7 @@ def status(
         try:
             engine = await initialize_engine(verbose)
 
-            table = Table(title="🧠 Personal Exploration Engine Status")
+            table = Table(title="🧠 Zerdisha Status")
             table.add_column("Component", style="cyan")
             table.add_column("Status", style="green")
             table.add_column("Details")
@@ -709,7 +709,7 @@ def init(
         False, "--verbose", "-v", help="Enable verbose logging")
 ):
     """Initialize configuration and check dependencies."""
-    console.print("🔧 Initializing Personal Exploration Engine...")
+    console.print("🔧 Initializing Zerdisha...")
 
     # Check for .env file
     if not Path(".env").exists():

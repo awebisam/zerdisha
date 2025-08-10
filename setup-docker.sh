@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Personal Exploration Engine - Docker Setup Script
+# Zerdisha - Docker Setup Script
 
-echo "🧠 Personal Exploration Engine - Docker Setup"
+echo "🧠 Zerdisha - Docker Setup"
 echo "=============================================="
 
 # Function to check if Docker is running
@@ -144,10 +144,10 @@ test_installation() {
     echo
     if [[ $REPLY =~ ^[Yy]$ ]]; then
         echo "Testing peengine installation..."
-        if command -v peengine >/dev/null 2>&1; then
-            peengine status
+        if command -v zerdisha >/dev/null 2>&1; then
+            zerdisha status
         else
-            echo "⚠️  peengine command not found. Try: python -m peengine.cli status"
+            echo "⚠️  zerdisha command not found. Try: python -m peengine.cli status"
         fi
     fi
 }
@@ -169,8 +169,8 @@ main() {
     echo ""
     echo "Next steps:"
     echo "1. Edit .env with your Azure OpenAI credentials"
-    echo "2. Run: peengine init"
-    echo "3. Start exploring: peengine start 'your topic'"
+    echo "2. Run: zerdisha init"
+    echo "3. Start exploring: zerdisha start 'your topic'"
     echo ""
     echo "To stop services: $COMPOSE_CMD down"
     echo "To view logs: $COMPOSE_CMD logs -f"

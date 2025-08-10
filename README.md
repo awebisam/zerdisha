@@ -1,22 +1,22 @@
-# Personal Exploration Engine (PEEngine)
+# Zerdisha
 
 ## Not applicable for anyone except @awebisam
 ## Modeled around my cognitive structure only
 
-A terminal-based interactive learning tool that serves as your *personal cognitive exoskeleton* for exploring topics, mapping conceptual connections, and refining mental models through AI-guided Socratic dialogue.
+A terminal-based interactive learning tool that serves as my *personal cognitive exoskeleton* for exploring topics, mapping conceptual connections, and refining mental models through AI-guided Socratic dialogue.
 
 ## 🧠 Core Philosophy
 
-- **Exploration over Answers**: AI guides you to discover insights rather than providing direct answers
+- **Exploration over Answers**: AI guides me to discover insights rather than providing direct answers
 - **Metaphorical Reasoning**: Uses metaphors as bridges between domains and concepts
 - **Graph-based Memory**: Every concept and connection is stored in a Neo4j knowledge graph
-- **Metacognitive Awareness**: System monitors and adjusts its own behavior based on learning patterns
+- **Metacognitive Awareness**: System monitors and adjusts its own behavior based on my learning patterns
 
 ## 🏗️ Architecture
 
 The system integrates three AI agents:
 
-- **Conversational Agent (CA)** — Your Socratic guide using metaphors
+- **Conversational Agent (CA)** — My Socratic guide using metaphors
 - **Pattern Detector (PD)** — Maps concepts and relationships to Neo4j graph
 - **Metacognitive Agent (MA)** — Monitors sessions and adjusts system parameters
 
@@ -29,9 +29,9 @@ The system integrates three AI agents:
 # Quick setup with Docker
 ./setup-docker.sh
 
-# Edit .env with your Azure OpenAI credentials
+# Edit .env with my Azure OpenAI credentials
 # Then test
-peengine init
+zerdisha init
 ```
 
 **Option B: Manual Setup**
@@ -41,18 +41,18 @@ pip install -e .
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your Azure OpenAI and database credentials
+# Edit .env with my Azure OpenAI and database credentials
 
 # Start databases manually (Neo4j + MongoDB)
 # Initialize
-peengine init
+zerdisha init
 ```
 
 ### 2. Start Exploring
 
 ```bash
 # Start a new exploration session
-peengine start "quantum mechanics"
+zerdisha start "quantum mechanics"
 
 # Interactive session with commands:
 # /map     - Show concept map
@@ -65,8 +65,8 @@ peengine start "quantum mechanics"
 
 ```bash
 # Review by date or session ID
-peengine review 2025-08-09
-peengine status
+zerdisha review 2025-08-09
+zerdisha status
 ```
 
 ## 📋 Requirements
@@ -107,11 +107,11 @@ MONGODB_DATABASE=socratic_lab
 ### Socratic Dialogue
 - AI never gives direct answers
 - Uses metaphors as primary communication method
-- Adapts metaphors if learner doesn't understand
+- Adapts metaphors if I don't understand
 - Challenges assumptions through questioning
 
 ### Knowledge Graph
-- **u-vectors**: Your personal, metaphorical understanding
+- **u-vectors**: My personal, metaphorical understanding
 - **c-vectors**: Canonical academic knowledge
 - **Metaphor connections**: Cross-domain bridges
 - **Session tracking**: Every exploration is preserved
@@ -120,7 +120,7 @@ MONGODB_DATABASE=socratic_lab
 - Detects metaphor lock-in, topic drift, stagnation
 - Suggests new exploration seeds
 - Adjusts conversational parameters in real-time
-- Generates insights about learning patterns
+- Generates insights about my learning patterns
 
 ## 📊 Data Models
 
@@ -149,7 +149,7 @@ pytest tests/ --cov=peengine
 
 ## 🏛️ Philosophical Foundation
 
-Based on your `philosophy.json`, the system embodies:
+Based on my `philosophy.json`, the system embodies:
 
 - **Non-dual awareness**: Everything connects to everything
 - **Process over product**: Focus on exploration rather than conclusions  
@@ -177,9 +177,9 @@ This is an experimental learning tool built according to the PRD. It implements:
 
 ## 🤝 Contributing
 
-This is primarily a personal learning experiment. If you're interested in the approach:
+This is primarily a personal learning experiment. If interested in the approach:
 
-1. Try the system with your own explorations
+1. Try the system with different explorations
 2. Document what works/doesn't work
 3. Submit insights rather than just code fixes
 
