@@ -5,7 +5,7 @@ import json
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
-from openai import AsyncOpenAI, AsyncAzureOpenAI
+from openai import AsyncAzureOpenAI
 
 from ..models.config import LLMConfig
 from ..models.graph import Session, ConceptExtraction, SeedDiscovery
@@ -19,18 +19,12 @@ class MetacognitiveAgent:
     def __init__(self, llm_config: LLMConfig):
         self.llm_config = llm_config
         
-        # Initialize the appropriate client based on API type
-        if llm_config.api_type == "azure":
-            self.client = AsyncAzureOpenAI(
-                api_key=llm_config.api_key,
-                azure_endpoint=llm_config.base_url,
-                api_version=llm_config.api_version
-            )
-        else:
-            self.client = AsyncOpenAI(
-                api_key=llm_config.api_key,
-                base_url=llm_config.base_url
-            )
+        # Initialize Azure OpenAI client
+        self.client = AsyncAzureOpenAI(
+            api_key=llm_config.azure_openai_key,
+            azure_endpoint=llm_config.azure_openai_endpoint,
+            api_version=llm_config.azure_openai_api_version
+        )
         
         # Analysis templates
         self.analysis_templates = self._load_analysis_templates()
@@ -39,13 +33,9 @@ class MetacognitiveAgent:
         self.session_flags = {}
         self.adjustment_history = {}
     
-    def _get_model_name(self) -> str:
-        """Get the appropriate model name or deployment for API calls."""
-        return (
-            self.llm_config.deployment_name 
-            if self.llm_config.api_type == "azure" and self.llm_config.deployment_name
-            else self.llm_config.model
-        )
+    def _get_deployment_name(self) -> str:
+        """Get the deployment name for metacognitive analysis."""
+        return self.llm_config.azure_openai_deployment_name
     
     async def initialize(self) -> None:
         """Initialize the metacognitive agent."""
@@ -213,7 +203,7 @@ Return JSON:
             )
             
             response = await self.client.chat.completions.create(
-                model=self._get_model_name(),
+                model=self._get_deployment_name(),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.4,
                 max_tokens=1200
@@ -267,7 +257,7 @@ Return JSON:
             )
             
             response = await self.client.chat.completions.create(
-                model=self._get_model_name(),
+                model=self._get_deployment_name(),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.6,  # Higher creativity for seed generation
                 max_tokens=800
@@ -336,7 +326,7 @@ Return JSON:
             )
             
             response = await self.client.chat.completions.create(
-                model=self._get_model_name(),
+                model=self._get_deployment_name(),
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=1000

@@ -25,6 +25,8 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "textual>=0.41.0",
     "pydantic-settings>=2.0.0",
+    "pymongo>=4.0.0",
+    "motor>=3.0.0",  # Async MongoDB driver
 ]
 
 [project.optional-dependencies]

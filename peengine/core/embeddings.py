@@ -3,7 +3,7 @@
 import logging
 import numpy as np
 from typing import List, Dict, Optional, Any
-from openai import AsyncOpenAI, AsyncAzureOpenAI
+from openai import AsyncAzureOpenAI
 
 from ..models.config import LLMConfig
 from ..models.graph import Vector
@@ -17,18 +17,12 @@ class EmbeddingService:
     def __init__(self, llm_config: LLMConfig):
         self.llm_config = llm_config
         
-        # Initialize the appropriate client based on API type
-        if llm_config.api_type == "azure":
-            self.client = AsyncAzureOpenAI(
-                api_key=llm_config.api_key,
-                azure_endpoint=llm_config.base_url,
-                api_version=llm_config.api_version
-            )
-        else:
-            self.client = AsyncOpenAI(
-                api_key=llm_config.api_key,
-                base_url=llm_config.base_url
-            )
+        # Initialize Azure OpenAI client
+        self.client = AsyncAzureOpenAI(
+            api_key=llm_config.azure_openai_key,
+            azure_endpoint=llm_config.azure_openai_endpoint,
+            api_version=llm_config.azure_openai_api_version
+        )
         self.model = "text-embedding-ada-002"  # Standard embedding model
         self.dimension = 1536  # Ada-002 dimension
     
@@ -145,14 +139,8 @@ Domain: {domain}
 """
         
         try:
-            model_or_deployment = (
-                self.llm_config.deployment_name 
-                if self.llm_config.api_type == "azure" and self.llm_config.deployment_name
-                else self.llm_config.model
-            )
-            
             response = await self.client.chat.completions.create(
-                model=model_or_deployment,
+                model=self.llm_config.azure_openai_deployment_name,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.1,  # Low temperature for canonical accuracy
                 max_tokens=200

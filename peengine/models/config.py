@@ -14,15 +14,26 @@ class DatabaseConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    """LLM configuration."""
-    api_key: str
-    base_url: str = "https://api.openai.com/v1"
-    model: str = "gpt-4"
+    """LLM configuration for Azure OpenAI."""
+    # Azure OpenAI Primary
+    azure_openai_key: str
+    azure_openai_endpoint: str
+    azure_openai_deployment_name: str
+    azure_openai_model_name: str
+    azure_openai_api_version: str = "2024-12-01-preview"
+    
+    # Azure AI Foundry Fallback
+    azure_ai_foundry_key: Optional[str] = None
+    azure_ai_foundry_endpoint: Optional[str] = None
+    
+    # Model Selection
+    primary_model: str = "gpt-4.1-mini"
+    fallback_model: str = "gpt-4o-mini"  
+    pattern_model: str = "gpt-3.5-turbo"
+    
+    # Generation Parameters
     temperature: float = 0.7
     max_tokens: int = 2000
-    api_type: str = "openai"  # "openai" or "azure"
-    api_version: str = "2024-02-15-preview"  # Azure API version
-    deployment_name: Optional[str] = None  # Azure deployment name
 
 
 class PersonaConfig(BaseModel):
@@ -35,21 +46,32 @@ class PersonaConfig(BaseModel):
 class Settings(BaseSettings):
     """Application settings loaded from environment."""
     
-    # Database
+    # Azure OpenAI Configuration (Primary)
+    azure_openai_key: str
+    azure_openai_endpoint: str
+    azure_openai_deployment_name: str
+    azure_openai_model_name: str
+    azure_openai_api_version: str = "2024-12-01-preview"
+    
+    # Azure AI Foundry Configuration (Fallback)
+    azure_ai_foundry_api_key: Optional[str] = None
+    azure_ai_foundry_endpoint: Optional[str] = None
+    
+    # Model Selection
+    primary_model: str = "gpt-4.1-mini"
+    fallback_model: str = "gpt-4o-mini"
+    pattern_model: str = "gpt-3.5-turbo"
+    
+    # Database Configuration
     neo4j_uri: str = "bolt://localhost:7687"
-    neo4j_username: str = "neo4j" 
+    neo4j_user: str = "neo4j"
     neo4j_password: str
     neo4j_database: str = "neo4j"
     
-    # OpenAI/Azure OpenAI
-    openai_api_key: str
-    openai_base_url: str = "https://api.openai.com/v1"
-    openai_model: str = "gpt-4"
-    openai_api_type: str = "openai"  # "openai" or "azure"
-    openai_api_version: str = "2024-02-15-preview"
-    openai_deployment_name: Optional[str] = None  # For Azure
+    mongodb_uri: str = "mongodb://localhost:27017"
+    mongodb_database: str = "socratic_lab"
     
-    # Application
+    # Application Configuration
     log_level: str = "INFO"
     persona_path: str = "docs/external/persona.md"
     knowledge_graphs_path: str = "knowledge_graphs/"
@@ -63,7 +85,7 @@ class Settings(BaseSettings):
         """Get database configuration."""
         return DatabaseConfig(
             uri=self.neo4j_uri,
-            username=self.neo4j_username,
+            username=self.neo4j_user,
             password=self.neo4j_password,
             database=self.neo4j_database
         )
@@ -72,12 +94,16 @@ class Settings(BaseSettings):
     def llm_config(self) -> LLMConfig:
         """Get LLM configuration."""
         return LLMConfig(
-            api_key=self.openai_api_key,
-            base_url=self.openai_base_url,
-            model=self.openai_model,
-            api_type=self.openai_api_type,
-            api_version=self.openai_api_version,
-            deployment_name=self.openai_deployment_name
+            azure_openai_key=self.azure_openai_key,
+            azure_openai_endpoint=self.azure_openai_endpoint,
+            azure_openai_deployment_name=self.azure_openai_deployment_name,
+            azure_openai_model_name=self.azure_openai_model_name,
+            azure_openai_api_version=self.azure_openai_api_version,
+            azure_ai_foundry_key=self.azure_ai_foundry_api_key,
+            azure_ai_foundry_endpoint=self.azure_ai_foundry_endpoint,
+            primary_model=self.primary_model,
+            fallback_model=self.fallback_model,
+            pattern_model=self.pattern_model
         )
     
     @property

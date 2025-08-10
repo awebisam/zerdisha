@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 import json
 
-from openai import AsyncOpenAI, AsyncAzureOpenAI
+from openai import AsyncAzureOpenAI
 
 from ..models.config import LLMConfig, PersonaConfig
 
@@ -19,17 +19,20 @@ class ConversationalAgent:
         self.llm_config = llm_config
         self.persona_config = persona_config
         
-        # Initialize the appropriate client based on API type
-        if llm_config.api_type == "azure":
-            self.client = AsyncAzureOpenAI(
-                api_key=llm_config.api_key,
-                azure_endpoint=llm_config.base_url,
-                api_version=llm_config.api_version
-            )
-        else:
-            self.client = AsyncOpenAI(
-                api_key=llm_config.api_key,
-                base_url=llm_config.base_url
+        # Initialize Azure OpenAI client
+        self.client = AsyncAzureOpenAI(
+            api_key=llm_config.azure_openai_key,
+            azure_endpoint=llm_config.azure_openai_endpoint,
+            api_version=llm_config.azure_openai_api_version
+        )
+        
+        # Fallback client for Azure AI Foundry (if configured)
+        self.fallback_client = None
+        if llm_config.azure_ai_foundry_key and llm_config.azure_ai_foundry_endpoint:
+            self.fallback_client = AsyncAzureOpenAI(
+                api_key=llm_config.azure_ai_foundry_key,
+                azure_endpoint=llm_config.azure_ai_foundry_endpoint,
+                api_version=llm_config.azure_openai_api_version
             )
         
         # Persona and context
@@ -40,13 +43,43 @@ class ConversationalAgent:
         # Conversation history for current session
         self.conversation_history: List[Dict[str, str]] = []
     
-    def _get_model_name(self) -> str:
-        """Get the appropriate model name or deployment for API calls."""
-        return (
-            self.llm_config.deployment_name 
-            if self.llm_config.api_type == "azure" and self.llm_config.deployment_name
-            else self.llm_config.model
-        )
+    def _get_deployment_name(self) -> str:
+        """Get the deployment name for Azure OpenAI."""
+        return self.llm_config.azure_openai_deployment_name
+    
+    async def _make_completion_request(self, messages: List[Dict[str, str]], temperature: float = None, max_tokens: int = None):
+        """Make completion request with fallback support."""
+        temperature = temperature or self.llm_config.temperature
+        max_tokens = max_tokens or self.llm_config.max_tokens
+        
+        try:
+            # Try primary Azure OpenAI client
+            response = await self.client.chat.completions.create(
+                model=self._get_deployment_name(),
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens
+            )
+            return response
+        except Exception as e:
+            logger.warning(f"Primary Azure OpenAI failed: {e}")
+            
+            # Try fallback client if available
+            if self.fallback_client:
+                try:
+                    response = await self.fallback_client.chat.completions.create(
+                        model=self.llm_config.fallback_model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens
+                    )
+                    logger.info("Used fallback Azure AI Foundry client")
+                    return response
+                except Exception as fallback_e:
+                    logger.error(f"Fallback Azure AI Foundry also failed: {fallback_e}")
+            
+            # Re-raise original exception if no fallback or fallback failed
+            raise e
         
     async def initialize(self) -> None:
         """Initialize the agent by loading persona."""
@@ -124,12 +157,7 @@ You are a Socratic learning guide focused on exploration through metaphors and q
         messages.extend(recent_history)
         
         try:
-            response = await self.client.chat.completions.create(
-                model=self._get_model_name(),
-                messages=messages,
-                temperature=self.llm_config.temperature,
-                max_tokens=self.llm_config.max_tokens
-            )
+            response = await self._make_completion_request(messages)
             
             assistant_message = response.choices[0].message.content
             
@@ -254,9 +282,8 @@ Be concise and factual.
 """
         
         try:
-            response = await self.client.chat.completions.create(
-                model=self._get_model_name(),
-                messages=[{"role": "system", "content": system_prompt}],
+            response = await self._make_completion_request(
+                [{"role": "system", "content": system_prompt}],
                 temperature=0.3,  # Lower temperature for factual content
                 max_tokens=500
             )

@@ -24,16 +24,26 @@ The system integrates three AI agents:
 
 ### 1. Setup
 
+**Option A: Docker (Recommended)**
 ```bash
-# Clone and install
-git clone <repo-url>
-cd zerdisha
+# Quick setup with Docker
+./setup-docker.sh
+
+# Edit .env with your Azure OpenAI credentials
+# Then test
+peengine init
+```
+
+**Option B: Manual Setup**
+```bash
+# Install dependencies
 pip install -e .
 
 # Configure environment
 cp .env.example .env
-# Edit .env with your OpenAI API key and Neo4j credentials
+# Edit .env with your Azure OpenAI and database credentials
 
+# Start databases manually (Neo4j + MongoDB)
 # Initialize
 peengine init
 ```
@@ -62,40 +72,35 @@ peengine status
 ## 📋 Requirements
 
 - Python 3.8+
-- Neo4j database (local or cloud)
-- OpenAI API key (or Azure OpenAI)
-  - **GPT-5 Support**: Optimized for Azure OpenAI GPT-5 models
-  - **GPT-4 Compatible**: Works with GPT-4, GPT-4 Turbo, and GPT-3.5
+- Docker & Docker Compose (for easy setup)
+- Azure OpenAI with **GPT-5** deployment (gpt-5-chat)
+- Neo4j + MongoDB (automatically handled by Docker)
 
 ## 🔧 Configuration
 
 Key settings in `.env`:
 
 ```env
-# OpenAI (Standard API)
-OPENAI_API_KEY=your_key_here
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_MODEL=gpt-4
-OPENAI_API_TYPE=openai
+# Azure OpenAI Configuration (Primary)
+AZURE_OPENAI_KEY=your_azure_openai_key_here
+AZURE_OPENAI_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-5-chat
+AZURE_OPENAI_MODEL_NAME=gpt-5-chat
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
 
-# Azure OpenAI (for GPT-5)
-# OPENAI_API_KEY=your_azure_key
-# OPENAI_BASE_URL=https://your-resource.openai.azure.com/
-# OPENAI_MODEL=gpt-5-turbo
-# OPENAI_API_TYPE=azure
-# OPENAI_DEPLOYMENT_NAME=your-gpt5-deployment
+# Model Selection
+PRIMARY_MODEL=gpt-5-chat
+FALLBACK_MODEL=gpt-4.1-mini
+PATTERN_MODEL=gpt-4.1-mini
 
-# Neo4j
+# Database Configuration (handled by Docker)
 NEO4J_URI=bolt://localhost:7687
-NEO4J_USERNAME=neo4j
-NEO4J_PASSWORD=your_password
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=knowledge123
 
-# Paths
-PERSONA_PATH=docs/external/persona.md
-KNOWLEDGE_GRAPHS_PATH=knowledge_graphs/
+MONGODB_URI=mongodb://localhost:27017
+MONGODB_DATABASE=socratic_lab
 ```
-
-**For GPT-5 setup**: See [Azure GPT-5 Setup Guide](docs/AZURE_GPT5_SETUP.md)
 
 ## 🎯 Key Features
 
