@@ -10,3 +10,4 @@ This file defines the relationships between the different "nodes" of the project
 *   `future` **builds_on** `features`
 *   `future` **aims_to_resolve** `gaps`
 *   `gaps` **highlight_deviations_from** `philosophy`
+*   `philosophy-alignment` **validates** `features` **against** `philosophy`
