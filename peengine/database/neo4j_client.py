@@ -5,7 +5,7 @@ from typing import List, Dict, Optional, Any
 from neo4j import GraphDatabase, Driver, Session as Neo4jSession
 from contextlib import contextmanager
 
-from ..models.graph import Node, Edge, Session, Vector
+from ..models.graph import Node, Edge, ExplorationSession, SessionRelation, LiveSession, Vector
 from ..models.config import DatabaseConfig
 
 logger = logging.getLogger(__name__)
@@ -55,10 +55,23 @@ class Neo4jClient:
     def create_indexes(self) -> None:
         """Create necessary indexes for performance."""
         indexes = [
+            # Node indexes
             "CREATE INDEX node_id_index IF NOT EXISTS FOR (n:Node) ON (n.id)",
             "CREATE INDEX node_type_index IF NOT EXISTS FOR (n:Node) ON (n.node_type)",
-            "CREATE INDEX session_id_index IF NOT EXISTS FOR (s:Session) ON (s.id)",
+            "CREATE INDEX node_session_index IF NOT EXISTS FOR (n:Node) ON (n.session_id)",
+            
+            # Session indexes
+            "CREATE INDEX session_id_index IF NOT EXISTS FOR (s:ExplorationSession) ON (s.id)",
+            "CREATE INDEX session_domain_index IF NOT EXISTS FOR (s:ExplorationSession) ON (s.domain)",
+            
+            # Edge indexes
             "CREATE INDEX edge_type_index IF NOT EXISTS FOR ()-[r:RELATES]-() ON (r.edge_type)",
+            "CREATE INDEX edge_session_index IF NOT EXISTS FOR ()-[r:RELATES]-() ON (r.session_id)",
+            
+            # Domain-focused indexes for rich semantic structure
+            "CREATE INDEX concept_id_domain IF NOT EXISTS FOR (c:Concept) ON (c.concept_id, c.domain)",
+            "CREATE INDEX concept_domain IF NOT EXISTS FOR (c:Concept) ON (c.domain)",
+            "CREATE FULLTEXT INDEX concept_descriptions IF NOT EXISTS FOR (c:Concept) ON [c.description, c.name] OPTIONS {indexConfig: {`fulltext.analyzer`: 'standard'}}"
         ]
         
         with self.session() as session:
@@ -70,12 +83,13 @@ class Neo4jClient:
                     logger.warning(f"Index creation failed (may already exist): {e}")
     
     def create_node(self, node: Node) -> bool:
-        """Create or update a node in the graph (idempotent using MERGE)."""
+        """Create or update a node in the graph with rich semantic labels (idempotent using MERGE)."""
         # Flatten properties into the main node structure
         flattened_properties = {
             "id": node.id,
             "label": node.label,
             "node_type": node.node_type.value,
+            "labels": node.labels,  # Store rich labels as property too
             "u_vector": node.u_vector.model_dump() if node.u_vector else None,
             "c_vector": node.c_vector.model_dump() if node.c_vector else None,
             "created_at": node.created_at.isoformat(),
@@ -83,17 +97,93 @@ class Neo4jClient:
             **node.properties  # Flatten custom properties directly into node
         }
         
-        # Use MERGE for idempotency - match on ID, then set all properties
+        # Get rich label string for Neo4j like "Node:Concept:EarlyInsight"
+        labels_str = node.get_labels_string()
+        
+        # Use MERGE for idempotency with rich labels - match on ID, then set all properties
         set_assignments = ", ".join([f"n.{key} = ${key}" for key in flattened_properties.keys()])
-        query = f"MERGE (n:Node {{id: $id}}) SET {set_assignments}"
+        query = f"MERGE (n:{labels_str} {{id: $id}}) SET {set_assignments}"
         
         with self.session() as session:
             try:
                 result = session.run(query, flattened_properties)
-                logger.info(f"Merged node: {node.id}")
+                logger.info(f"Merged node with labels {labels_str}: {node.id}")
                 return True
             except Exception as e:
-                logger.error(f"Failed to merge node {node.id}: {e}")
+                logger.error(f"Failed to merge node {node.id} with labels {labels_str}: {e}")
+                return False
+    
+    def create_session(self, session: ExplorationSession) -> bool:
+        """Create or update an exploration session in the graph."""
+        session_properties = {
+            "id": session.id,
+            "domain": session.domain,
+            "topic": session.topic,
+            "session_type": session.session_type,
+            "timestamp": session.timestamp.isoformat(),
+            "duration_minutes": session.duration_minutes,
+            "node_count": session.node_count,
+            "edge_count": session.edge_count,
+            "breakthrough_count": session.breakthrough_count,
+            **session.properties
+        }
+        
+        query = "MERGE (s:ExplorationSession {id: $id}) SET s += $properties"
+        
+        with self.session() as neo_session:
+            try:
+                neo_session.run(query, {"id": session.id, "properties": session_properties})
+                logger.info(f"Created/updated exploration session: {session.id}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to create session {session.id}: {e}")
+                return False
+    
+    def link_node_to_session(self, node_id: str, session_id: str) -> bool:
+        """Create CONTAINS relationship between session and node."""
+        query = """
+        MATCH (s:ExplorationSession {id: $session_id})
+        MATCH (n:Node {id: $node_id})
+        MERGE (s)-[:CONTAINS]->(n)
+        """
+        
+        with self.session() as neo_session:
+            try:
+                neo_session.run(query, {"session_id": session_id, "node_id": node_id})
+                return True
+            except Exception as e:
+                logger.error(f"Failed to link node {node_id} to session {session_id}: {e}")
+                return False
+    
+    def create_session_relation(self, relation: SessionRelation) -> bool:
+        """Create cross-session relationship."""
+        relation_properties = {
+            "id": relation.id,
+            "relation_type": relation.relation_type,
+            "metaphor_justification": relation.metaphor_justification,
+            "confidence": relation.confidence,
+            "created_by": relation.created_by,
+            "created_at": relation.created_at.isoformat()
+        }
+        
+        query = f"""
+        MATCH (s1:ExplorationSession {{id: $source_session_id}})
+        MATCH (s2:ExplorationSession {{id: $target_session_id}})
+        MERGE (s1)-[r:{relation.relation_type.upper()}]->(s2)
+        SET r += $properties
+        """
+        
+        with self.session() as neo_session:
+            try:
+                neo_session.run(query, {
+                    "source_session_id": relation.source_session_id,
+                    "target_session_id": relation.target_session_id,
+                    "properties": relation_properties
+                })
+                logger.info(f"Created session relation: {relation.source_session_id} -> {relation.target_session_id}")
+                return True
+            except Exception as e:
+                logger.error(f"Failed to create session relation {relation.id}: {e}")
                 return False
     
     def create_edge(self, edge: Edge) -> bool:
@@ -181,7 +271,7 @@ class Neo4jClient:
             result = session.run(query, {"node_id": node_id, "max_depth": max_depth})
             return [dict(record["connected"]) for record in result]
     
-    def create_session_summary(self, session: Session) -> bool:
+    def create_session_summary(self, session: LiveSession) -> bool:
         """Create or update a session summary node in the knowledge graph (idempotent using MERGE)."""
         query = """
         MERGE (s:Session {id: $id})
