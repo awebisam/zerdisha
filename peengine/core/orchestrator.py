@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 from pathlib import Path
 
-from ..models.graph import Session, Node, Edge, NodeType, EdgeType, Vector
+from ..models.graph import Session, Node, Edge, NodeType, EdgeType, Vector, ExplorationSession
 from ..models.config import Settings
 from ..database.neo4j_client import Neo4jClient
 from ..database.mongodb_client import MongoDBClient
@@ -125,6 +125,37 @@ class ExplorationEngine:
 
         if not (mongo_success and neo4j_success):
             raise RuntimeError(f"Failed to create session in databases")
+
+        # Also create an ExplorationSession container in the graph for this live session
+        try:
+            # Lightweight domain inference from topic (no LLM call here)
+            topic_lower = (topic or "").lower()
+            domain = "general"
+            if any(w in topic_lower for w in ["physics", "quantum", "energy", "force", "relativity", "thermo"]):
+                domain = "physics"
+            elif any(w in topic_lower for w in ["chemistry", "molecule", "reaction", "chemical", "bond"]):
+                domain = "chemistry"
+            elif any(w in topic_lower for w in ["biology", "life", "evolution", "genetic", "ecology"]):
+                domain = "biology"
+            elif any(w in topic_lower for w in ["math", "equation", "number", "algebra", "geometry", "calculus"]):
+                domain = "mathematics"
+            elif any(w in topic_lower for w in ["philosophy", "ethics", "consciousness", "meaning", "logic"]):
+                domain = "philosophy"
+            elif any(w in topic_lower for w in ["computer", "algorithm", "programming", "ai", "software", "data"]):
+                domain = "computer_science"
+
+            exploration_session = ExplorationSession(
+                id=str(uuid.uuid4()),
+                domain=domain,
+                topic=topic,
+                session_type="live"
+            )
+            if self.graph_db.create_session(exploration_session):
+                # Bridge runtime and persistent session containers
+                self.current_session.exploration_session_id = exploration_session.id
+        except Exception as e:
+            logger.warning(
+                f"Failed to create ExplorationSession container: {e}")
 
         # Load relevant past nodes for context
         relevant_nodes = await self._load_relevant_context(topic)
@@ -493,17 +524,23 @@ class ExplorationEngine:
         new_nodes = 0
         new_edges = 0
 
+        # Prefer persistent ExplorationSession container id if available
+        container_session_id: Optional[str] = None
+        if self.current_session and self.current_session.id == session_id:
+            container_session_id = self.current_session.exploration_session_id
+        session_tag = container_session_id or session_id
+
         for extraction in extractions or []:
             # Create concept node
             concept_node = Node(
                 id=str(uuid.uuid4()),
                 label=getattr(extraction, "concept", ""),
                 node_type=NodeType.CONCEPT,
+                session_id=session_tag,
                 properties={
                     "domain": getattr(extraction, "domain", "unknown"),
                     "context": getattr(extraction, "context", ""),
                     "confidence": getattr(extraction, "confidence", 0.5),
-                    "session_id": session_id,
                 },
             )
 
@@ -512,6 +549,14 @@ class ExplorationEngine:
                 # Attach to in-memory session if still the same
                 if self.current_session and self.current_session.id == session_id:
                     self.current_session.nodes_created.append(concept_node.id)
+                # Link node to ExplorationSession container if present
+                if container_session_id:
+                    try:
+                        self.graph_db.link_node_to_session(
+                            concept_node.id, container_session_id)
+                    except Exception as e:
+                        logger.warning(
+                            f"Failed to link node to session container: {e}")
 
             # Metaphor nodes and edges
             for metaphor in getattr(extraction, "metaphors", []) or []:
@@ -519,19 +564,27 @@ class ExplorationEngine:
                     id=str(uuid.uuid4()),
                     label=metaphor,
                     node_type=NodeType.METAPHOR,
+                    session_id=session_tag,
                     properties={
                         "concept": getattr(extraction, "concept", ""),
-                        "session_id": session_id,
                     },
                 )
                 if self.graph_db.create_node(metaphor_node):
                     new_nodes += 1
+                    if container_session_id:
+                        try:
+                            self.graph_db.link_node_to_session(
+                                metaphor_node.id, container_session_id)
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to link metaphor node to session container: {e}")
                     edge = Edge(
                         id=str(uuid.uuid4()),
                         source_id=concept_node.id,
                         target_id=metaphor_node.id,
                         edge_type=EdgeType.METAPHORICAL,
-                        properties={"session_id": session_id},
+                        session_id=session_tag,
+                        properties={},
                     )
                     if self.graph_db.create_edge(edge):
                         new_edges += 1
@@ -1151,11 +1204,20 @@ Concept:"""
                             properties={
                                 'domain': domain,
                                 'canonical_definition': canonical_definition,
-                                'session_id': self.current_session.id if self.current_session else None
                             },
+                            session_id=(self.current_session.exploration_session_id if self.current_session and self.current_session.exploration_session_id else (
+                                self.current_session.id if self.current_session else None)),
                             c_vector=c_vector
                         )
                         self.graph_db.create_node(new_node)
+                        # Link to container if present
+                        if self.current_session and self.current_session.exploration_session_id:
+                            try:
+                                self.graph_db.link_node_to_session(
+                                    new_node.id, self.current_session.exploration_session_id)
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to link new c_vector node to session container: {e}")
                         logger.info(
                             f"Created new node with c_vector for {concept}")
                     except Exception as create_error:

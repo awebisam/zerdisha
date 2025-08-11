@@ -9,7 +9,7 @@ from enum import Enum
 class NodeType(str, Enum):
     """Types of nodes in the knowledge graph."""
     CONCEPT = "concept"
-    METAPHOR = "metaphor" 
+    METAPHOR = "metaphor"
     DOMAIN = "domain"
     SESSION = "session"
     HYPOTHESIS = "hypothesis"
@@ -31,7 +31,8 @@ class Vector(BaseModel):
     values: List[float]
     model: str = "text-embedding-ada-002"
     dimension: int = Field(default_factory=lambda: 1536)
-    metadata: Dict[str, Any] = Field(default_factory=dict)  # Store additional data
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict)  # Store additional data
 
 
 class Node(BaseModel):
@@ -39,32 +40,33 @@ class Node(BaseModel):
     id: str
     label: str  # Display name
     node_type: NodeType  # Primary type
-    labels: List[str] = Field(default_factory=list)  # Rich Neo4j labels like ["Concept", "EarlyInsight"]
-    session_id: str  # Every node belongs to a session
+    # Rich Neo4j labels like ["Concept", "EarlyInsight"]
+    labels: List[str] = Field(default_factory=list)
+    session_id: Optional[str] = None  # Every node may belong to a session
     properties: Dict[str, Any] = Field(default_factory=dict)
     u_vector: Optional[Vector] = None  # User's metaphorical understanding
     c_vector: Optional[Vector] = None  # Canonical academic vector
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
-    
+
     def get_neo4j_labels(self) -> List[str]:
         """Get the full list of labels for Neo4j, combining primary type and rich labels."""
         # Start with base labels
         base_labels = ["Node"]
-        
+
         # Add rich semantic labels if provided
         if self.labels:
             base_labels.extend(self.labels)
         else:
             # Fallback to node_type based label
             base_labels.append(self.node_type.value.title())
-            
+
         return base_labels
-    
+
     def get_labels_string(self) -> str:
         """Get labels formatted for Cypher queries like 'Node:Concept:EarlyInsight'."""
         return ":".join(self.get_neo4j_labels())
-    
+
     def is_intrasession(self, other_node: 'Node') -> bool:
         """Check if this node is in the same session as another node."""
         return self.session_id == other_node.session_id
@@ -76,7 +78,8 @@ class Edge(BaseModel):
     source_id: str
     target_id: str
     edge_type: EdgeType
-    session_id: Optional[str] = None  # Intrasession edges have session_id, cross-session don't
+    # Intrasession edges have session_id, cross-session don't
+    session_id: Optional[str] = None
     properties: Dict[str, Any] = Field(default_factory=dict)
     weight: float = 1.0
     confidence: float = 1.0
@@ -95,7 +98,8 @@ class ExplorationSession(BaseModel):
     edge_count: int = 0
     breakthrough_count: int = 0
     properties: Dict[str, Any] = Field(default_factory=dict)
-    
+
+
 class LiveSession(BaseModel):
     """Active learning session for real-time exploration."""
     id: str
@@ -109,6 +113,25 @@ class LiveSession(BaseModel):
     edges_created: List[str] = Field(default_factory=list)
     metrics: Dict[str, Any] = Field(default_factory=dict)
     status: str = "active"  # active, completed, paused
+
+
+class Session(BaseModel):
+    """Primary session model used across the system and tests.
+
+    Matches expectations from tests and orchestrator:
+    - Defaults: status='active', start_time set, end_time=None
+    - Tracks messages and created graph artifacts
+    """
+    id: str
+    title: str
+    topic: str
+    start_time: datetime = Field(default_factory=datetime.utcnow)
+    end_time: Optional[datetime] = None
+    status: str = "active"
+    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    nodes_created: List[str] = Field(default_factory=list)
+    edges_created: List[str] = Field(default_factory=list)
+    exploration_session_id: Optional[str] = None
 
 
 class ConceptExtraction(BaseModel):
@@ -140,6 +163,7 @@ class SeedDiscovery(BaseModel):
     suggested_questions: List[str] = Field(default_factory=list)
     priority: float = 0.5
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
 
 class SessionRelation(BaseModel):
     """Cross-session relationships for connecting explorations."""
