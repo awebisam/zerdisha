@@ -150,11 +150,25 @@ class KnowledgeGraphImporter:
         
         # Check if this is actually a domain graph file with nodes and relationships
         if isinstance(data, dict) and "nodes" in data and ("relationships" in data or "edges" in data):
-            # Process as domain graph instead
+            # This connection file is actually a graph with nodes+edges; treat it as a session import
             domain = json_file.stem
-            nodes_created = await self._import_nodes(data["nodes"], domain)
+            exploration_session = ExplorationSession(
+                id=f"{domain}_session",
+                domain=self._get_domain_from_filename(json_file.stem),
+                topic=self._infer_topic_from_data(data, domain),
+                session_type="imported",
+                timestamp=datetime.utcnow()
+            )
+
+            nodes_created = await self._import_nodes(data["nodes"], domain, exploration_session)
             relationships = data.get("edges", data.get("relationships", []))
-            edges_created = await self._import_edges(relationships)
+            edges_created = await self._import_edges(relationships, exploration_session)
+
+            # Update and persist exploration session container
+            exploration_session.node_count = nodes_created
+            exploration_session.edge_count = edges_created
+            exploration_session.breakthrough_count = self._count_breakthroughs(data)
+            self.db.create_session(exploration_session)
             return {"nodes": nodes_created, "edges": edges_created}
         
         # Regular connection processing
