@@ -243,7 +243,7 @@ class ExplorationEngine:
             await self._enqueue_pd_consolidate()
             return result
         elif command == "seed":
-            result = await self._inject_seed()
+            result = await self._inject_seed(args)
             await self._enqueue_pd_consolidate()
             return result
         elif command == "analyze":
@@ -911,12 +911,26 @@ Example format:
                 "recovery_suggestions": ["Continue your exploration", "Try gap check again later", "Restart the session if issues persist"]
             }
 
-    async def _inject_seed(self) -> Dict[str, Any]:
-        """Inject a new exploration seed from MA."""
+    async def _inject_seed(self, args: List[str] | None = None) -> Dict[str, Any]:
+        """Inject a new exploration seed from MA.
+
+        Supports optional args as key=value pairs, e.g.:
+        /seed discovery_type=adjacent_domain concept="entropy"
+        """
         if not self.current_session:
             return {"error": "No active session"}
 
-        seed = await self.ma.generate_seed(self.current_session)
+        # Parse preferences from args
+        prefs: Dict[str, Any] = {}
+        for a in (args or []):
+            if "=" in a:
+                k, v = a.split("=", 1)
+                k = k.strip()
+                v = v.strip().strip('"\'')
+                if k and v:
+                    prefs[k] = v
+
+        seed = await self.ma.generate_seed(self.current_session, preferences=prefs or None)
         return {
             "seed_concept": seed.concept,
             "rationale": seed.rationale,

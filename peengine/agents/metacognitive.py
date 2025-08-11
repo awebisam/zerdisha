@@ -14,6 +14,8 @@ from ..core.prompts import (
     MA_FINAL_SESSION_ANALYSIS,
 )
 from ..models.graph import Session, ConceptExtraction, SeedDiscovery
+from ..models.responses import SeedResponse, SeedItem
+from ..core.json_utils import safe_load_json
 
 logger = logging.getLogger(__name__)
 
@@ -270,8 +272,13 @@ Return JSON:
 
         return "\n".join(usage_summary[:10])  # Top 10 most used
 
-    async def generate_seed(self, session: Session) -> SeedDiscovery:
-        """Generate exploration seed using LLM intelligence."""
+    async def generate_seed(self, session: Session, preferences: Dict[str, Any] | None = None) -> SeedDiscovery:
+        """Generate exploration seed using LLM intelligence.
+
+        preferences options (all optional):
+        - discovery_type: one of connection_gap|adjacent_domain|deeper_layer|cross_pollination
+        - concept: preferred concept focus to bias selection
+        """
 
         # Build context for seed generation
         concepts = [msg.get("user", "") + " " + msg.get("assistant", "")
@@ -292,40 +299,168 @@ Return JSON:
             "gaps": "To be identified through analysis",
         }
 
-        prompt = self._format_template(seed_template, context)
+        # If user prefers a discovery type or concept, lightly hint in prompt
+        pref = preferences or {}
+        hint_lines = []
+        if isinstance(pref.get("discovery_type"), str):
+            hint_lines.append(
+                f"Preferred discovery_type: {pref['discovery_type']}")
+        if isinstance(pref.get("concept"), str):
+            hint_lines.append(f"Preferred concept focus: {pref['concept']}")
+
+        hint_block = ("\nUser preferences:\n" +
+                      "\n".join(hint_lines) + "\n") if hint_lines else "\n"
+        prompt = self._format_template(seed_template, context) + hint_block
 
         try:
-            response = await self.client.chat.completions.create(
-                model=self._get_deployment_name(),
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.6,  # Creative but focused
-                max_tokens=400,
-            )
+            # Prefer Responses API with explicit JSON schema for structure
+            seed_schema = {
+                "type": "object",
+                "properties": {
+                    "seeds": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "concept": {"type": "string"},
+                                "discovery_type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "connection_gap",
+                                        "adjacent_domain",
+                                        "deeper_layer",
+                                        "cross_pollination"
+                                    ]
+                                },
+                                "rationale": {"type": "string"},
+                                "related_concepts": {"type": "array", "items": {"type": "string"}},
+                                "suggested_questions": {"type": "array", "items": {"type": "string"}},
+                                "priority": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+                            },
+                            "required": ["concept", "discovery_type", "rationale"]
+                        }
+                    }
+                },
+                "required": ["seeds"]
+            }
 
-            # Parse JSON response
-            seed_text = response.choices[0].message.content.strip()
+            # Try Responses API first for clean JSON
+            seeds: List[Dict[str, Any]] = []
+            try:
+                resp = await self.client.responses.create(
+                    model=self._get_deployment_name(),
+                    input=[{"role": "user", "content": prompt}],
+                    response_format={
+                        "type": "json_schema",
+                        "json_schema": {"name": "seed_response", "schema": seed_schema}
+                    },
+                    temperature=0.6,
+                    max_output_tokens=400,
+                )
+                if resp and getattr(resp, "output", None):
+                    parts = getattr(resp.output[0], "content", None) or []
+                    for part in parts:
+                        if getattr(part, "type", "") == "output_text":
+                            raw = getattr(part, "text", "")
+                            data, err = safe_load_json(raw)
+                            if err:
+                                logger.warning(
+                                    f"Seed JSON parse issue (responses): {err}")
+                            if isinstance(data, dict):
+                                seeds = data.get("seeds", []) or []
+                            break
+            except Exception as responses_err:
+                logger.info(
+                    f"Responses API failed for seeds, falling back to chat JSON mode: {responses_err}")
 
-            import re
-            json_match = re.search(r"\{.*\}", seed_text, re.DOTALL)
-            if json_match:
-                seed_data = json.loads(json_match.group())
-                seeds = seed_data.get("seeds", [])
+            # Fallback: Chat JSON mode if Responses didn't yield seeds
+            if not seeds:
+                chat = await self.client.chat.completions.create(
+                    model=self._get_deployment_name(),
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.6,
+                    max_tokens=400,
+                    response_format={"type": "json_object"},
+                )
+                content = (chat.choices[0].message.content or "").strip()
+                data, err = safe_load_json(content)
+                if err:
+                    logger.warning(f"Seed JSON parse issue (chat): {err}")
+                if isinstance(data, dict):
+                    seeds = data.get("seeds", []) or []
 
-                if seeds:
-                    # Return the highest priority seed
-                    best_seed = max(
-                        seeds, key=lambda x: x.get("priority", 0.5))
-                    return SeedDiscovery(
-                        concept=best_seed.get("concept", "New exploration"),
-                        rationale=best_seed.get(
-                            "rationale", "Continue exploring"),
-                        suggested_questions=best_seed.get(
-                            "suggested_questions", []),
-                    )
+            # Final fallback: plain chat, attempt substring JSON parse
+            if not seeds:
+                chat = await self.client.chat.completions.create(
+                    model=self._get_deployment_name(),
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.6,
+                    max_tokens=400,
+                )
+                text = (chat.choices[0].message.content or "").strip()
+                data, err = safe_load_json(text)
+                if err:
+                    logger.warning(f"Seed JSON parse issue (plain): {err}")
+                if isinstance(data, dict):
+                    seeds = data.get("seeds", []) or []
+
+            # Optional filtering by preferences
+            if seeds and pref.get("discovery_type"):
+                seeds = [s for s in seeds if s.get(
+                    "discovery_type") == pref.get("discovery_type")] or seeds
+            if seeds and pref.get("concept"):
+                target = str(pref.get("concept")).lower()
+                # Rank by whether concept substring appears, then priority
+
+                def rank(s: Dict[str, Any]) -> tuple:
+                    c = str(s.get("concept", "")).lower()
+                    contains = 1 if target and target in c else 0
+                    return (contains, float(s.get("priority", 0.5)))
+                seeds = sorted(seeds, key=rank, reverse=True)
+
+            # Validate with Pydantic for safety
+            try:
+                model = SeedResponse.model_validate({"seeds": seeds})
+            except Exception as val_err:
+                logger.warning(
+                    f"SeedResponse validation failed, attempting to coerce: {val_err}")
+                # Try to coerce discovery_type to allowed values when possible
+                coerced: List[Dict[str, Any]] = []
+                allowed = {"connection_gap", "adjacent_domain",
+                           "deeper_layer", "cross_pollination"}
+                for s in seeds or []:
+                    dt = s.get("discovery_type")
+                    if dt not in allowed:
+                        # default to deeper_layer when unknown
+                        s = {**s, "discovery_type": "deeper_layer"}
+                    coerced.append(s)
+                try:
+                    model = SeedResponse.model_validate({"seeds": coerced})
+                except Exception as val_err2:
+                    logger.error(
+                        f"SeedResponse validation failed after coercion: {val_err2}")
+                    model = SeedResponse(seeds=[])
+
+            if model.seeds:
+                # Prefer highest priority after any user-target ranking has been applied
+                def best_key(item: SeedItem):
+                    return item.priority
+                best_item = max(model.seeds, key=best_key)
+                return SeedDiscovery(
+                    concept=best_item.concept or f"Deeper exploration of {session.topic}",
+                    discovery_type=best_item.discovery_type,
+                    rationale=best_item.rationale or "Continue exploring",
+                    related_concepts=list(best_item.related_concepts or []),
+                    suggested_questions=list(
+                        best_item.suggested_questions or []),
+                    priority=float(best_item.priority),
+                )
 
             # Fallback seed
             return SeedDiscovery(
                 concept=f"Deeper exploration of {session.topic}",
+                discovery_type=str(
+                    pref.get("discovery_type") or "deeper_layer"),
                 rationale="Continue building understanding",
                 suggested_questions=[
                     f"What aspects of {session.topic} intrigue you most?"],
@@ -335,6 +470,8 @@ Return JSON:
             logger.error(f"Seed generation failed: {e}")
             return SeedDiscovery(
                 concept=f"Continue exploring {session.topic}",
+                discovery_type=str((preferences or {}).get(
+                    "discovery_type") or "deeper_layer"),
                 rationale="Keep the exploration momentum going",
                 suggested_questions=[
                     f"What new angle on {session.topic} would you like to explore?"],
