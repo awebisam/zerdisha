@@ -108,7 +108,7 @@ async def test_databases():
 
 async def main():
     """Main test function."""
-    print("🧠 Personal Exploration Engine - Configuration Test")
+    print("🧠 Zerdisha - Configuration Test")
     print("=" * 55)
 
     # Test Azure OpenAI
@@ -123,8 +123,8 @@ async def main():
     if azure_ok:
         print(f"\n🎉 Configuration looks good!")
         print(f"   Next steps:")
-        print(f"   1. Run: peengine init")
-        print(f"   2. Start exploring: peengine start 'your topic'")
+        print(f"   1. Run: zerdisha init")
+        print(f"   2. Start exploring: zerdisha start 'your topic'")
     else:
         print(f"\n⚠️  Please fix the configuration issues above.")
 

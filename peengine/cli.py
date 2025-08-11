@@ -730,7 +730,7 @@ def init(
         return
 
     console.print(
-        "\n[green]✓[/green] Ready to explore! Use 'peengine start <topic>' to begin.")
+        "\n[green]✓[/green] Ready to explore! Use 'zerdisha start <topic>' to begin.")
 
 
 @app.command(name="import-graphs")
@@ -779,7 +779,7 @@ def import_knowledge_graphs(
                 console.print(
                     f"\n[green]✓[/green] Successfully imported {results['total_nodes']} concepts into your knowledge graph!")
                 console.print(
-                    "Use 'peengine start <topic>' to explore with your imported knowledge.")
+                    "Use 'zerdisha start <topic>' to explore with your imported knowledge.")
             else:
                 console.print(
                     f"\n[yellow]⚠[/yellow] No knowledge graphs found to import.")

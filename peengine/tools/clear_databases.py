@@ -106,7 +106,7 @@ class DatabaseCleaner:
             print()
             print("🧹 COMPLETE DATABASE DESTRUCTION SUCCESSFUL")
             print("   All knowledge and conversations have been permanently deleted.")
-            print("   You can now start fresh with 'peengine import-graphs' and 'peengine start <topic>'")
+            print("   You can now start fresh with 'zerdisha import-graphs' and 'zerdisha start <topic>'")
         
         return results
 
