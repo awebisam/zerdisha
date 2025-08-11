@@ -16,6 +16,7 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.live import Live
 from rich.markdown import Markdown
+import re
 
 # Setup logger
 logger = logging.getLogger(__name__)
@@ -27,6 +28,47 @@ app = typer.Typer(
     help="Zerdisha - A terminal-based interactive learning tool"
 )
 console = Console()
+
+
+def format_math_for_terminal(text: str) -> str:
+    """Convert LaTeX math notation to Unicode for better terminal display."""
+    if not text:
+        return text
+        
+    # Convert double parentheses wrapped math
+    text = re.sub(r'\(\(([^)]+)\)\)', r'\1', text)
+    
+    # Convert common LaTeX symbols to Unicode
+    math_replacements = {
+        r'\\frac\{([^}]+)\}\{([^}]+)\}': r'(\1)/(\2)',  # fractions
+        r'\\Delta': 'Δ',      # Delta
+        r'\\alpha': 'α',      # alpha
+        r'\\beta': 'β',       # beta
+        r'\\gamma': 'γ',      # gamma
+        r'\\theta': 'θ',      # theta
+        r'\\pi': 'π',         # pi
+        r'\\sigma': 'σ',      # sigma
+        r'\\mu': 'μ',         # mu
+        r'\\lambda': 'λ',     # lambda
+        r'\\omega': 'ω',      # omega
+        r'\\sum': 'Σ',        # sum
+        r'\\int': '∫',        # integral
+        r'\\partial': '∂',    # partial
+        r'\\infty': '∞',      # infinity
+        r'\\pm': '±',         # plus-minus
+        r'\\times': '×',      # times
+        r'\\div': '÷',        # division
+        r'\\leq': '≤',        # less than or equal
+        r'\\geq': '≥',        # greater than or equal
+        r'\\neq': '≠',        # not equal
+        r'\\approx': '≈',     # approximately
+        r'\\sqrt\{([^}]+)\}': r'√(\1)',  # square root
+    }
+    
+    for latex_pattern, unicode_replacement in math_replacements.items():
+        text = re.sub(latex_pattern, unicode_replacement, text)
+    
+    return text
 
 # Global engine instance
 engine: Optional[ExplorationEngine] = None
@@ -135,9 +177,10 @@ async def interactive_session(engine: ExplorationEngine):
             with Live(console=console, refresh_per_second=2):
                 response = await engine.process_user_input(user_input)
 
-            # Display CA response
+            # Display CA response with formatted math
+            formatted_message = format_math_for_terminal(response['message'])
             console.print(Panel(
-                Markdown(response['message']),
+                Markdown(formatted_message),
                 title="Exploration Guide",
                 border_style="blue"
             ))
@@ -170,8 +213,9 @@ async def interactive_session(engine: ExplorationEngine):
             }
 
             recovery_message = await generate_adaptive_conversation_error(engine, error_context)
+            formatted_recovery = format_math_for_terminal(recovery_message)
             console.print(Panel(
-                Markdown(recovery_message),
+                Markdown(formatted_recovery),
                 title="⚠️ Processing Issue",
                 border_style="yellow"
             ))
@@ -538,8 +582,9 @@ def display_gap_check(gap_data: dict):
         else:
             border_style = "red"
 
+        formatted_gap_message = format_math_for_terminal(message)
         console.print(Panel(
-            Markdown(message),
+            Markdown(formatted_gap_message),
             title="🔍 Understanding Gap Check",
             border_style=border_style
         ))
