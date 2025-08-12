@@ -14,29 +14,33 @@ This guide covers configuring the Personal Exploration Engine to use Azure OpenA
 
 1. Go to [Azure OpenAI Studio](https://oai.azure.com/)
 2. Navigate to **Deployments** → **Create new deployment**
-3. Select your GPT-5 model (e.g., `gpt-5-turbo` or `gpt-5`)
+3. Select your GPT-5 model (e.g., `gpt-5-chat` or `gpt-5`)
 4. Give it a deployment name (e.g., `peengine-gpt5`)
 5. Note down the deployment name - you'll need this
 
 ### 2. Get Your Credentials
 
 From your Azure OpenAI resource page:
-- **Endpoint URL**: Found in "Keys and Endpoint" (e.g., `https://your-resource.openai.azure.com/`)
+- **Endpoint URL**: Found in "Keys and Endpoint" (e.g., `https://your-resource.cognitiveservices.azure.com/`)
 - **API Key**: One of the keys from "Keys and Endpoint"
-- **API Version**: Use `2024-02-15-preview` (supports latest GPT models)
+- **API Version**: Use `2024-12-01-preview` 
 
 ### 3. Configure Environment
 
-Edit your `.env` file with Azure OpenAI settings:
+Edit your `.env` file with your Azure OpenAI settings. See `.env.example` for the full list of variables. The key settings are:
 
 ```env
-# Azure OpenAI Configuration for GPT-5
-OPENAI_API_KEY=your_azure_openai_api_key_here
-OPENAI_BASE_URL=https://your-resource.openai.azure.com/
-OPENAI_MODEL=gpt-5-turbo
-OPENAI_API_TYPE=azure
-OPENAI_API_VERSION=2024-02-15-preview
-OPENAI_DEPLOYMENT_NAME=peengine-gpt5
+# Azure OpenAI Configuration (Primary)
+AZURE_OPENAI_KEY=your_azure_openai_key_here
+AZURE_OPENAI_ENDPOINT=https://your-resource.cognitiveservices.azure.com/
+AZURE_OPENAI_DEPLOYMENT_NAME=gpt-5-chat
+AZURE_OPENAI_MODEL_NAME=gpt-5-chat
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
+
+# Model Selection
+PRIMARY_MODEL=gpt-5-chat
+FALLBACK_MODEL=gpt-4.1-mini
+PATTERN_MODEL=gpt-4.1-mini
 
 # Neo4j Configuration (unchanged)
 NEO4J_URI=bolt://localhost:7687

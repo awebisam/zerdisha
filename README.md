@@ -158,22 +158,23 @@ Based on my `philosophy.json`, the system embodies:
 
 ## ⚠️ Current Status
 
-This is an experimental learning tool built according to the PRD. It implements:
+This is an experimental learning tool built according to the PRD. The core feature set is now solidified and includes:
 
 - ✅ Full Typer CLI with interactive sessions
 - ✅ Neo4j graph storage with vector support
-- ✅ Three-agent architecture (CA/PD/MA)
+- ✅ Three-agent architecture (CA/PD/MA) with active metacognitive influence
 - ✅ Session management and review
-- ✅ Vector embeddings (u-vectors/c-vectors)
+- ✅ Vector embeddings (u-vectors/c-vectors) for gap analysis (`/gapcheck`)
+- ✅ Enhanced session mapping with relationship descriptions (`/map`)
 - ✅ Rich TUI with conversation flow
 
 ## 🔮 Future Enhancements
 
 - Graph visualization in TUI
-- Advanced vector similarity search
-- Integration with existing knowledge graphs
+- User-facing vector similarity search command
+- Automated MA influence loop (proactive adjustments)
+- Multi-session learning trajectory analysis
 - Export capabilities for artifacts
-- Multi-session learning trajectories
 
 ## 🤝 Contributing
 
